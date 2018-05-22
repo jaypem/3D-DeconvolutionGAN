@@ -2,39 +2,43 @@ import numpy as np
 import os
 import selenium_scrapeImages as scraper
 import cv2
-import matplotlib.pyplot as plt
+import imutils
+from datetime import datetime
 
 
-def load_tranfer_images(path, img_size=(256,128), squared_img_size=128, use_sqr_img=False):
+
+'''
+    2D
+'''
+
+def load_tranfer_images(path, squared_img_size=128):
     '''
         path: folder from where images will be loaded
-        img_size: predefined resize values (m,n)
         squared_img_size: assumed squared size of the image after resize
-        use_sqr_img: if True, most images have different sizes after resize
     '''
-    if use_sqr_img:
-        # not safe, because of machine accuracy by resize image
-        images = np.empty((0, np.square(squared_img_size)))
-    else:
-        images = np.empty((0, np.multiply(img_size[0], img_size[1])))
+    images = np.empty((0, np.square(squared_img_size)))
 
     for filename in os.listdir(path):
+        if filename == 'Thumbs.db':
+            continue
         try:
             img = cv2.imread(path+'/'+filename, 0)
 
             # dynamic resize
-            if use_sqr_img:
-                vector_img_size = np.square(squared_img_size)
-                m, n = img.shape[0], img.shape[1]
-                a = np.multiply(m, n)
-                factor = np.sqrt(np.divide(vector_img_size, a))
+            img = tranfer_squared_image(img=img)
 
-                img = cv2.resize(img,None,fx=factor, fy=factor, interpolation = cv2.INTER_LINEAR)
-            # fix resize
-            else:
-                img = cv2.resize(img, img_size, interpolation = cv2.INTER_LINEAR)
+            vector_img_size = np.square(squared_img_size)
+            m, n = img.shape[0], img.shape[1]
+            a = np.multiply(m, n)
+            factor = np.sqrt(np.divide(vector_img_size, a))
+
+            img = cv2.resize(img,None,fx=factor, fy=factor, interpolation = cv2.INTER_LINEAR)
 
             img = np.reshape(img, (np.multiply(img.shape[0], img.shape[1])))
+
+            # normalice vector
+            # img = img.astype('float32')
+            # img /= 255
 
             images = np.append(images, [img], axis=0)
         except Exception as e:
@@ -43,36 +47,86 @@ def load_tranfer_images(path, img_size=(256,128), squared_img_size=128, use_sqr_
 
     return images
 
-def create_blurred_images(input_images, noise, rev_img_size=(128,256), squared_img_size=128, use_sqr_img=False):
+# TODO: normalisierung aller Bilder noch durchführen,
+# aber erst unmittelbar vor dem Training der GANs
+
+def tranfer_squared_image(img):
+    '''
+        resize img in a square by the shorter side (width or height)
+    '''
+    m, n = img.shape
+    diff  = np.abs(m-n)
+    cut_length = int(diff / 2)
+
+    if m == n:
+        return img
+    elif m > n:
+        img = img[0+cut_length:m-cut_length,:]
+    elif m < n:
+        img = img[:,0+cut_length:n-cut_length]
+    else:
+        print("tranfer_squared_image: no suitable image size: 0")
+
+    m, n = img.shape
+    if m == n:
+        return img
+    elif m > n:
+        img = img[1:,:]
+    elif m < n:
+        img = img[:,1:]
+    else:
+        print("tranfer_squared_image: no suitable image size: 1")
+
+    return img
+
+def create_blurred_images(input_images, noise, squared_img_size=128, k_size=3):
     '''
         apply gaussian and box filter on existing images
 
         images: create blurred images from existing images
-        rev_img_size: image size befor reshape to 1D-array
         squared_img_size: assumed squared size of the image after resize
-        use_sqr_img: if True, most images have different sizes after resize
+        k_size: kernel size for filter
     '''
-
-    if use_sqr_img:
-        # not safe, because of machine accuracy by resize image
-        images = np.empty((0, np.square(squared_img_size)))
-    else:
-        images = np.empty((0, np.multiply(rev_img_size[0], rev_img_size[1])))
+    images = np.empty((0, np.square(squared_img_size)))
 
     for img in input_images:
-        tmp = np.reshape(img, rev_img_size)
+        tmp = np.reshape(img, (squared_img_size,squared_img_size))
 
         if noise == 'gaussian':
-            tmp = cv2.GaussianBlur(tmp, (3,3), 1)
+            tmp = cv2.GaussianBlur(tmp, (k_size,k_size), 1)
         elif noise == 'box':
-            tmp = cv2.blur(tmp, (3,3))
+            tmp = cv2.blur(tmp, (k_size,k_size))
         else:
             print('create_blurred_images: no suitable filter')
 
-        tmp = np.reshape(tmp, (np.multiply(rev_img_size[0], rev_img_size[1])))
+        tmp = np.reshape(tmp, np.square(squared_img_size))
+
         images = np.append(images, [tmp], axis=0)
 
     return images
+
+def create_canny_images(input_images, squared_img_size=128):
+    '''
+        apply gaussian and box filter on existing images
+
+        images: create blurred images from existing images
+        squared_img_size: assumed squared size of the image after resize
+    '''
+    images = np.empty((0, np.square(squared_img_size)))
+
+    for img in input_images:
+        tmp = np.reshape(img.copy(), (squared_img_size,squared_img_size))
+
+        edges = imutils.auto_canny(np.uint8(tmp))
+        tmp = np.reshape(edges, np.square(squared_img_size))
+
+        images = np.append(images, [tmp], axis=0)
+
+    return images
+
+'''
+    3D
+'''
 
 def draw_bullet_3d():
     from mpl_toolkits.mplot3d import Axes3D
@@ -91,7 +145,6 @@ def draw_bullet_3d():
     ax.plot_surface(x, y, z, color='r')
 
     plt.show()
-
 
 def simulation_plot_3D():
     # TODO: zielverzeichnis für 'temp-plot.html' ändern
@@ -144,5 +197,40 @@ def simulation_plot_3D():
     fig = go.Figure(data=data,layout=go.Layout(title='Offline Plotly Testing',width = 800,height = 500,
                             xaxis = dict(title = 'X-axis'), yaxis = dict(title = 'Y-axis')))
 
-
     plot(fig,show_link = False)
+
+
+def model_saver(model_instance, path="./../models/"):
+    now = datetime.now()
+    date = "{0}_{1}_{2}".format(now.year, now.month, now.day)
+    if not os.path.exists(path+date):
+        try:
+            os.makedirs(path+date)
+        except:
+            print('model_saver: another problem occurs: ', path+date)
+    else:
+        print('model_saver: propably the folder already exists: ', path+date)
+
+    js = "{}.json".format(str(now).split(' ')[1].split('.')[0].replace(":", "_"))
+    h5 = "{}.h5".format(str(now).split(' ')[1].split('.')[0].replace(":", "_"))
+
+    # serialize model to JSON
+    model_json = model_instance.to_json()
+    with open(path+date+'/'+js, "w") as json_file:
+        json_file.write(model_json)
+
+    # serialize weights to HDF5
+    model_instance.save_weights(path+date+'/'+h5)
+
+    print('model_saver: model successfully saved in: ', path+date+'/'+js)
+    print('model_saver: model successfully saved in: ', path+date+'/'+h5)
+
+def model_loader(day):
+    # load json and create model
+    json_file = open('model.json', 'r')
+    loaded_model_json = json_file.read()
+    json_file.close()
+    loaded_model = model_from_json(loaded_model_json)
+    # load weights into new model
+    loaded_model.load_weights("model.h5")
+    print("Loaded model from disk")

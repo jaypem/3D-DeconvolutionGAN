@@ -11,20 +11,26 @@ def scrapeImages(searchterm, number_images=20):
 
     print('Download __ ', number_images, ' __ of searchterm: ', searchterm)
     url = "https://www.google.co.in/search?q="+searchterm+"&source=lnms&tbm=isch"
-    # browser = webdriver.Chrome(r"C:\Users\praetoriusjanphilipp\Downloads\chromedriver_win32\chromedriver.exe")
-    webdriver_path = "/tmp/chromedriver_win32/chromedriver.exe"
 
+    webdriver_path = "tmp/chromedriver_win32/chromedriver.exe"
     print('webdriver-path: ', os.getcwd()+webdriver_path)
     browser = webdriver.Chrome(webdriver_path)
+
     browser.get(url)
     header={'User-Agent':"Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/43.0.2357.134 Safari/537.36"}
     counter = 0
     succounter = 0
 
-    # prefix_path = "/../data/2D/google_search_images/"
+    prefix_path = "./../data/2D/google_search_images/"
 
-    if not os.path.exists(searchterm):
-        os.mkdir(searchterm)
+    if not os.path.exists(prefix_path+searchterm):
+        try:
+            os.makedirs(prefix_path+searchterm)
+            print('scrapeImages: images successfully saved in: ', prefix_path+searchterm)
+        except:
+            print('scrapeImages: another problem occurs: ', prefix_path+searchterm)
+    else:
+        print('scrapeImages: propably the folder already exists: ', path+date)
 
     for _ in range(500):
         browser.execute_script("window.scrollBy(0,10000)")
