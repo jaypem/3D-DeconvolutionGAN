@@ -1,7 +1,9 @@
 from __future__ import print_function, division
 import scipy
+import tensorflow as tf
+import time
+import cv2
 
-from keras.datasets import mnist
 # from keras_contrib.layers.normalization import InstanceNormalization
 from keras.layers import Input, Dense, Reshape, Flatten, Dropout, Concatenate
 from keras.layers import BatchNormalization, Activation, ZeroPadding2D
@@ -9,6 +11,7 @@ from keras.layers.advanced_activations import LeakyReLU
 from keras.layers.convolutional import UpSampling2D, Conv2D
 from keras.models import Sequential, Model
 from keras import optimizers
+from keras.callbacks import ModelCheckpoint, History, TensorBoard
 import datetime
 import matplotlib.pyplot as plt
 import sys
@@ -16,6 +19,8 @@ import numpy as np
 import os
 import random
 from data_loader import DataLoader
+
+import helper as hp
 
 
 
@@ -69,6 +74,15 @@ class Pix2Pix():
         # Discriminators determines validity of translated images / condition pairs
         valid = self.discriminator([fake_A, img_B])
 
+        # Save the model weights after each epoch if the validation loss decreased
+        p = time.strftime("%Y-%m-%d_%H_%M_%S")
+        self.checkpointer = ModelCheckpoint(filepath="logs/{}.base".format(p), verbose=1,
+                                            save_best_only=True, mode='min')
+
+        self.tensorboard = TensorBoard(log_dir="logs/{}".format(p), histogram_freq=0, batch_size=8,
+            write_graph=False, write_grads=True, write_images=False, embeddings_freq=0,
+            embeddings_layer_names=None, embeddings_metadata=None)
+
         self.combined = Model(inputs=[img_A, img_B], outputs=[valid, fake_A])
         self.combined.compile(loss=['mse', 'mae'],
                               loss_weights=[1, 100],
@@ -102,6 +116,7 @@ class Pix2Pix():
 
         # Downsampling
         d1 = conv2d(d0, self.gf, bn=False)
+        # d1 = conv2d(d0, self.gf, bn=True)
         d2 = conv2d(d1, self.gf*2)
         d3 = conv2d(d2, self.gf*4)
         d4 = conv2d(d3, self.gf*8)
@@ -124,8 +139,7 @@ class Pix2Pix():
 
     def build_discriminator(self):
 
-        # def d_layer(layer_input, filters, f_size=4, bn=True):
-        def d_layer(layer_input, filters, f_size=3, bn=True):
+        def d_layer(layer_input, filters, f_size=4, bn=True):
             """Discriminator layer"""
             d = Conv2D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
             d = LeakyReLU(alpha=0.2)(d)
@@ -140,6 +154,7 @@ class Pix2Pix():
         combined_imgs = Concatenate(axis=-1)([img_A, img_B])
 
         d1 = d_layer(combined_imgs, self.df, bn=False)
+        # d1 = d_layer(combined_imgs, self.df, bn=True)
         d2 = d_layer(d1, self.df*2)
         d3 = d_layer(d2, self.df*4)
         d4 = d_layer(d3, self.df*8)
@@ -149,7 +164,6 @@ class Pix2Pix():
         return Model([img_A, img_B], validity)
 
     def train(self, epochs, batch_size=1, sample_interval=50):
-
         start_time = datetime.datetime.now()
 
         # Adversarial loss ground truths
@@ -177,12 +191,22 @@ class Pix2Pix():
                 #  Train Generator
                 # -----------------
 
-                # Train the generators
-                g_loss = self.combined.train_on_batch([imgs_A, imgs_B], [valid, imgs_A])
+                # Fit the model
+                g_loss = self.combined.fit([imgs_A, imgs_B], [valid, imgs_A],
+                                            validation_split=0.1,
+                                            verbose=0,
+                                            epochs=1,
+                                            batch_size=batch_size,
+                                            # callbacks=[self.tensorboard])#, self.checkpointer])
+                                            callbacks=[self.tensorboard, self.checkpointer])
+                g_loss = g_loss.history['loss']
+
+                # Train the generators (alternative way for train the combined model)
+                # g_loss = self.combined.train_on_batch([imgs_A, imgs_B], [valid, imgs_A])
 
                 elapsed_time = datetime.datetime.now() - start_time
                 # Plot the progress
-                print ("[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %3d%%] [G loss: %f] time: %s" % (epoch, epochs,
+                print ("[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %3d%%] [G loss: %f] time: %s" % (epoch, epochs-1,
                                                                     batch_i, self.data_loader.n_batches,
                                                                     d_loss[0], 100*d_loss[1],
                                                                     g_loss[0],
@@ -211,15 +235,26 @@ class Pix2Pix():
         gen_imgs = 0.5 * gen_imgs + 0.5
         gen_imgs = np.squeeze(gen_imgs, axis=3)
 
-        titles = ['Condition', 'Generated', 'Original']
-        fig, axs = plt.subplots(r, c, figsize=(20,20))
-        cnt = 0
-        for i in range(r):
-            for j in range(c):
-                axs[i,j].imshow(gen_imgs[cnt], cmap='gray')
-                axs[i,j].set_title(titles[i])
-                axs[i,j].axis('off')
-                cnt += 1
+        # save unique images
+        save_unique_image = False
 
-        fig.savefig("images/%s/%d_%d.png" % (self.dataset_name, epoch, batch_i))
-        plt.close()
+        titles = ['Condition', 'Generated', 'Original']
+        cnt = 0
+        if save_unique_image:
+            for i in range(r):
+                for _ in range(c):
+                    hp.image_saver(gen_imgs[cnt], titles[i], self.dataset_name, epoch, batch_i)
+                    cnt += 1
+        else:
+            fig, axs = plt.subplots(r, c, figsize=(20,20))
+            for i in range(r):
+                for j in range(c):
+                    axs[i,j].imshow(gen_imgs[cnt], cmap='gray')
+                    axs[i,j].set_title(titles[i])
+                    axs[i,j].axis('off')
+                    cnt += 1
+
+            fig.savefig("images/%s/%d_%d.png" % (self.dataset_name, epoch, batch_i))
+            plt.close()
+            # img_tmp = cv2.imread("images/%s/%d_%d.png" % (self.dataset_name, epoch, batch_i), 0)
+            # tf.summary.image('result_images', img_tmp)
