@@ -1,6 +1,7 @@
 from __future__ import print_function, division
 import scipy
 import tensorflow as tf
+# from time import time
 import time
 import cv2
 
@@ -76,14 +77,14 @@ class Pix2Pix():
 
         # Save the model weights after each epoch if the validation loss decreased
         p = time.strftime("%Y-%m-%d_%H_%M_%S")
-        self.checkpointer = ModelCheckpoint(filepath="logs/{}.base".format(p), verbose=1,
+        self.checkpointer = ModelCheckpoint(filepath="logs/{}_CP".format(p), verbose=1, #filepath="logs/{}.base".format(p), verbose=1,
                                             save_best_only=True, mode='min')
 
         self.tensorboard = TensorBoard(log_dir="logs/{}".format(p), histogram_freq=0, batch_size=8,
             write_graph=False, write_grads=True, write_images=False, embeddings_freq=0,
             embeddings_layer_names=None, embeddings_metadata=None)
 
-        self.combined = Model(inputs=[img_A, img_B], outputs=[valid, fake_A])
+        self.combined = Model(inputs=[img_A, img_B], outputs=[valid, fake_A], name='combined')
         self.combined.compile(loss=['mse', 'mae'],
                               loss_weights=[1, 100],
                               optimizer=optimizer)
@@ -116,7 +117,6 @@ class Pix2Pix():
 
         # Downsampling
         d1 = conv2d(d0, self.gf, bn=False)
-        # d1 = conv2d(d0, self.gf, bn=True)
         d2 = conv2d(d1, self.gf*2)
         d3 = conv2d(d2, self.gf*4)
         d4 = conv2d(d3, self.gf*8)
@@ -154,7 +154,6 @@ class Pix2Pix():
         combined_imgs = Concatenate(axis=-1)([img_A, img_B])
 
         d1 = d_layer(combined_imgs, self.df, bn=False)
-        # d1 = d_layer(combined_imgs, self.df, bn=True)
         d2 = d_layer(d1, self.df*2)
         d3 = d_layer(d2, self.df*4)
         d4 = d_layer(d3, self.df*8)
@@ -197,7 +196,6 @@ class Pix2Pix():
                                             verbose=0,
                                             epochs=1,
                                             batch_size=batch_size,
-                                            # callbacks=[self.tensorboard])#, self.checkpointer])
                                             callbacks=[self.tensorboard, self.checkpointer])
                 g_loss = g_loss.history['loss']
 
