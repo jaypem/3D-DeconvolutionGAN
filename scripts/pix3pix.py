@@ -1,41 +1,45 @@
 import numpy as np
 import time
 import datetime
+import os
+import matplotlib.pyplot as plt
 from enum import Flag, auto
 import tensorflow as tf
 
-from keras.layers import Input, Concatenate, BatchNormalization, Dropout #Dense, Reshape, Flatten,Activation
+from keras.layers import Input, Concatenate, BatchNormalization, Dropout, Flatten
 from keras.layers.advanced_activations import LeakyReLU
 from keras.layers import Conv3D, UpSampling3D, ZeroPadding3D, Cropping3D
 from keras.models import Model
-from keras import optimizers
-from keras.callbacks import ModelCheckpoint, TensorBoard
+from keras import optimizers, losses
+from keras.callbacks import ModelCheckpoint, TensorBoard, History
 
-from data_loader3D import DataLoader
+from data_loader3D import DataLoader3D
 import helper as hp
 
-class Enhancement(Flag):
+
+class MANIPULATION(Flag):
     SPATIAL_UP = auto()
-    SPATIAL_DOWN = auto()   # noch nicht erledigt
-    FREQUENCY_UP = auto()   # noch nicht erledigt
-    FREQUENCY_MIN = auto()  # noch nicht erledigt
-    GENERATIVE_SPATIAL = auto() # muss noch genauer überlegt werden     # noch nicht erledigt
-    GENERATIVE_FREQUENCY = auto() # muss noch genauer überlegt werden   # noch nicht erledigt
+    SPATIAL_DOWN = auto()
+    SPATIAL_MIN = auto()
+    FREQUENCY_UP = auto()           # noch nicht erledigt
+    FREQUENCY_DOWN = auto()         # noch nicht erledigt
+    FREQUENCY_MIN = auto()          # noch nicht erledigt
+    GENERATIVE_SPATIAL = auto()     # muss noch genauer überlegt werden     # noch nicht erledigt
+    GENERATIVE_FREQUENCY = auto()   # muss noch genauer überlegt werden   # noch nicht erledigt
 
 
 class Pix3Pix():
-    def __init__(self, vol_size, vol_depth, d_name, enhancement):
+    def __init__(self, vol_resize, d_name, stack_manipulation):
         # Input shape
-        self.vol_rows = vol_size
-        self.vol_cols = vol_size
-        self.vol_depth = vol_depth
+        self.vol_rows = vol_resize[0]
+        self.vol_cols = vol_resize[1]
+        self.vol_depth = vol_resize[2]
         self.channels = 1
         self.vol_shape = (self.vol_rows, self.vol_cols, self.vol_depth, self.channels)
-        self.input_shape = [None,self.vol_rows,self.vol_cols,self.vol_depth,self.channels]
 
-        # Distinguish for stack manipulation
+        # and distinguish for stack manipulation
         self.depth_two_potency = hp.check_for_two_potency(self.vol_depth)
-        self.enhancement = enhancement
+        self.manipulation = stack_manipulation
         if self.depth_two_potency:
             self.e_v = 0
         else:
@@ -43,17 +47,20 @@ class Pix3Pix():
 
         # Configure data loader
         self.dataset_name = d_name
-        self.data_loader = DataLoader(dataset_name=self.dataset_name,
-                                      vol_size=self.vol_shape)
+        self.data_loader = DataLoader3D(dataset_name=self.dataset_name,
+                                      vol_resize=self.vol_shape)
 
         # Calculate output shape of D (PatchGAN)
-        patch = int(self.vol_rows / 2**4)
-        self.disc_patch = (patch, patch, patch, 1)
+        patch = int(self.vol_rows / 2**3) #4)
+        patch_depth = int(np.ceil(self.vol_depth / 2**4))
+        self.disc_patch = (patch, patch, patch_depth, 1)
+        # self.disc_patch = (patch*patch*patch_depth,)
 
         # Number of filters in the first layer of G and D
         self.gf = 64
         self.df = 64
 
+        loss = losses.kullback_leibler_divergence
         optimizer = optimizers.Adam(0.0002, 0.5)
 
         # Build and compile the discriminator
@@ -81,19 +88,26 @@ class Pix3Pix():
         # Discriminators determines validity of translated images / condition pairs
         valid = self.discriminator([fake_A, vol_B])
 
-        # Save the model weights after each epoch if the validation loss decreased
-        p = time.strftime("%Y-%m-%d_%H_%M_%S")
-        self.checkpointer = ModelCheckpoint(filepath="logs/{}_CP".format(p), verbose=1, #filepath="logs/{}.base".format(p), verbose=1,
-                                            save_best_only=True, mode='min')
-
-        self.tensorboard = TensorBoard(log_dir="logs/{}".format(p), histogram_freq=0, batch_size=8,
-            write_graph=False, write_grads=True, write_images=False, embeddings_freq=0,
-            embeddings_layer_names=None, embeddings_metadata=None)
-
+        # TODO: # ACHTUNG:
+        # If the model has multiple outputs, you can use a different loss on each output
+        # by passing a dictionary or a list of losses.
+        # The loss value that will be minimized by the model will then be the sum of all individual losses.
         self.combined = Model(inputs=[vol_A, vol_B], outputs=[valid, fake_A], name='combined')
         self.combined.compile(loss=['mse', 'mae'], loss_weights=[1, 100], optimizer=optimizer)
-        print(self.combined.summary())
+        # self.combined.compile(loss=[loss, 'mae'], loss_weights=[1, 100], optimizer=optimizer)
+
+        # Save the model weights after each epoch if the validation loss decreased
+        p = time.strftime("%Y-%m-%d_%H_%M_%S")
+        self.checkpointer = ModelCheckpoint(filepath="logs/{}_CP".format(p), verbose=1,
+                                            save_best_only=True, mode='min')
+
+        self.tensorboard = TensorBoard(log_dir="logs/{}".format(p), histogram_freq=0, batch_size=1,
+            write_graph=False, write_grads=True, write_images=False, embeddings_freq=0,
+            embeddings_layer_names=None, embeddings_metadata=None)
+        self.tensorboard.set_model(self.combined)
+
         print('finish Pix3Pix __init__')
+
 
     def build_generator(self):
         """U-Net Generator"""
@@ -101,6 +115,11 @@ class Pix3Pix():
 
         def conv3d(layer_input, filters, f_size=4, bn=True):
             """Layers used during downsampling"""
+
+            # # TODO: einziger Weg wie man vor dem conv. das padding selbst bestimmen kann
+            # padded_input = tf.pad(input, [[0, 0], [2, 2], [1, 1], [0, 0]], "CONSTANT")
+            # output = tf.nn.conv2d(padded_input, filter, strides=[1, 1, 1, 1], padding="VALID")
+
             d = Conv3D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
             d = LeakyReLU(alpha=0.2)(d)
             if bn:
@@ -123,20 +142,19 @@ class Pix3Pix():
                 u = Dropout(dropout_rate)(u)
             u = BatchNormalization(momentum=0.8)(u)
 
-            print('upsampling:  ', cnt, '\t\t', u.shape)
+            print('upsampling:\t\t\t', u.shape)
             u = Concatenate()([u, skip_input])
             return u
 
         # Image input (distinguish for two potency stack number)
         d0 = Input(shape=self.vol_shape)
-        print('model input:\t\t\t', d0.shape)
+        print('generator-model input:\t\t', d0.shape)
         if not self.depth_two_potency:
             d0_m = self.manipulate_input_stack(d0)
-        # print('d0_m shape ', d0_m.shape)
+            self.resize_stack(d0, upsample=True)
 
-        self.stack_downsamling.append(int(d0.shape[3]))
-        c = 0
-
+        self.stack_downsamling.append(int(d0.shape[3])); c = 0
+        print('generator-resize:', d0_m.shape)
         # Downsampling
         if not self.depth_two_potency:
             d1 = conv3d(d0_m, self.gf, bn=False); c += 1
@@ -146,26 +164,26 @@ class Pix3Pix():
         d3 = conv3d(d2, self.gf*4); c += 1
         d4 = conv3d(d3, self.gf*8); c += 1
         d5 = conv3d(d4, self.gf*8); c += 1
-        d6 = conv3d(d5, self.gf*8); c += 1
-        d7 = conv3d(d6, self.gf*8); c += 1
+        # d6 = conv3d(d5, self.gf*8); c += 1
+        # d7 = conv3d(d6, self.gf*8); c += 1
 
-        print('manipulation of stack axes:', self.stack_downsamling, c)
         # Upsampling
-        u1 = deconv3d(d7, d6, self.gf*8, cnt=c); c -= 1
-        u2 = deconv3d(u1, d5, self.gf*8, cnt=c); c -= 1
-        u3 = deconv3d(u2, d4, self.gf*8, cnt=c); c -= 1
+        # u1 = deconv3d(d7, d6, self.gf*8, cnt=c); c -= 1
+        # u2 = deconv3d(u1, d5, self.gf*8, cnt=c); c -= 1
+        # u3 = deconv3d(u2, d4, self.gf*8, cnt=c); c -= 1
+        u3 = deconv3d(d5, d4, self.gf*8, cnt=c); c -= 1
         u4 = deconv3d(u3, d3, self.gf*4, cnt=c); c -= 1
         u5 = deconv3d(u4, d2, self.gf*2, cnt=c); c -= 1
         u6 = deconv3d(u5, d1, self.gf, cnt=c); c -= 1
 
         u7 = UpSampling3D(size=2, data_format="channels_last")(u6)
         output_vol = Conv3D(self.channels, kernel_size=4, strides=1, padding='same', activation='tanh')(u7)
-
+        print('generator-resize:', output_vol.shape)
         # model output (distinguish for two potency stack number)
         if not self.depth_two_potency:
             output_vol = self.manipulate_output_stack(output_vol)
-        print('model output:', c, '\t\t', output_vol.shape)
-        return Model(d0, output_vol)
+        print('generator-model output:\t\t', d0.shape, output_vol.shape)
+        return Model(d0, output_vol, name='generator')
 
     def build_discriminator(self):
 
@@ -177,37 +195,46 @@ class Pix3Pix():
                 d = BatchNormalization(momentum=0.8)(d)
             return d
 
+        # Image input (distinguish for two potency stack number)
         vol_A = Input(shape=self.vol_shape)
         vol_B = Input(shape=self.vol_shape)
+        if not self.depth_two_potency:
+            vol_A_m = self.manipulate_input_stack(vol_A)
+            vol_B_m = self.manipulate_input_stack(vol_B)
+        print('discriminator-resize:', vol_A_m.shape, vol_B_m.shape)
 
         # Concatenate image and conditioning image by channels to produce input
-        combined_vols = Concatenate(axis=-1)([vol_A, vol_B])
+        if self.depth_two_potency:
+            combined_vols = Concatenate(axis=-1)([vol_A, vol_B])
+        else:
+            combined_vols = Concatenate(axis=-1)([vol_A_m, vol_B_m])
 
         d1 = d_layer(combined_vols, self.df, bn=False)
         d2 = d_layer(d1, self.df*2)
         d3 = d_layer(d2, self.df*4)
-        d4 = d_layer(d3, self.df*8)
+        # d4 = d_layer(d3, self.df*8)
 
-        validity = Conv3D(1, kernel_size=4, strides=1, padding='same')(d4)
+        validity = Conv3D(1, kernel_size=4, strides=1, padding='same')(d3) #(d4)
+        # validity = Flatten(data_format="channels_last")(validity)
+        print('discriminator-model in/output:\t', vol_A.shape, vol_B.shape, '\n\t\t\t\t', validity.shape)
+        return Model([vol_A, vol_B], validity, name='discriminator')
 
-        return Model([vol_A, vol_B], validity)
-
-    def train(self, epochs, batch_size=1, sample_interval=50):
+    def train(self, epochs, batch_size=1, sample_interval=50, add_noise=False):
+        p = time.strftime("%Y-%m-%d_%H_%M_%S")
         start_time = datetime.datetime.now()
 
-        # Adversarial loss ground truths
-        # # TODO: ones und zeros vertauschen?!? für min.
-        valid = np.ones((batch_size,) + self.disc_patch)
-        fake = np.zeros((batch_size,) + self.disc_patch)
+        # Adversarial loss ground truths (6 = 1 original volume + 5 noise volumes)
+        if add_noise:
+            valid = np.ones((6*batch_size,) + self.disc_patch)
+            fake = np.zeros((6*batch_size,) + self.disc_patch)
+        else:
+            valid = np.ones((batch_size,) + self.disc_patch)
+            fake = np.zeros((batch_size,) + self.disc_patch)
 
         for epoch in range(epochs):
-            for batch_i, (vols_A, vols_B) in enumerate(self.data_loader.load_batch(batch_size, k_size=9)):
-                # reshape images
-                print('test0', vols_A[0].shape, vols_B[0].shape)
+            for batch_i, (vols_A, vols_B) in enumerate(self.data_loader.load_batch(batch_size, add_noise)):
+                # expand dimension/reshape images
                 vols_A, vols_B = np.expand_dims(vols_A, axis=4), np.expand_dims(vols_B, axis=4)
-
-                print('test1', vols_A[0].shape, vols_B[0].shape)
-                #print('eine epoche', batch_i, vols_A.shape)
 
                 # ---------------------
                 #  Train Discriminator
@@ -226,103 +253,150 @@ class Pix3Pix():
                 # -----------------
 
                 # Fit the model
-                g_loss = self.combined.fit([vols_A, vols_B], [valid, vols_A],
-                                            validation_split=0.1,
-                                            verbose=0,
-                                            epochs=1,
-                                            batch_size=batch_size,
-                                            callbacks=[self.tensorboard, self.checkpointer])
-                g_loss = g_loss.history['loss']
-
-                # Train the generators (alternative way for train the combined model)
-                # g_loss = self.combined.train_on_batch([vols_A, vols_B], [valid, vols_A])
+                g_loss = self.combined.train_on_batch([vols_A, vols_B], [valid, vols_A])
 
                 elapsed_time = datetime.datetime.now() - start_time
                 # Plot the progress
                 print ("[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %3d%%] [G loss: %f] time: %s" % (epoch, epochs-1,
-                                                                    batch_i, self.data_loader.n_batches,
-                                                                    d_loss[0], 100*d_loss[1],
-                                                                    g_loss[0],
-                                                                    elapsed_time))
+                                                                    batch_i, self.data_loader.n_batches-1, d_loss[0],
+                                                                    100*d_loss[1], g_loss[0], elapsed_time))
+                # self.write_log(g_loss, batch_i)
 
                 # If at save interval => save generated image samples
                 if batch_i % sample_interval == 0:
-                    self.sample_images(epoch, batch_i)
+                    self.sample_images(epoch, batch_i, p)
 
         time_elapsed = datetime.datetime.now() - start_time
         print('\nFinish training in (hh:mm:ss.ms) {}'.format(time_elapsed))
         return self.discriminator, self.generator, self.combined
 
+    def sample_images(self, epoch, batch_i, p):
+        os.makedirs('images/{0}/{0}_{1}'.format(self.dataset_name, p), exist_ok=True)
+        r, c = 3, 3
+
+        imgs_A, imgs_B = self.data_loader.load_data(batch_size=1)
+        imgs_A, imgs_B = np.expand_dims(imgs_A, axis=4), np.expand_dims(imgs_B, axis=4)
+
+        fake_A = self.generator.predict(imgs_B)
+
+        gen_imgs = np.concatenate([imgs_B, fake_A, imgs_A])
+
+        # Rescale images 0 - 1
+        gen_imgs = 0.5 * gen_imgs + 0.5
+        gen_imgs = np.squeeze(gen_imgs, axis=4)
+
+        titles = ['Condition', 'Generated', 'Original']
+        # select 'r' (default=3) random sorted stacks
+        s_i = np.sort(np.random.randint(low=0, high=gen_imgs.shape[3], size=r))
+
+        fig, axs = plt.subplots(r, c, figsize=(20,20))
+        for i in range(r):
+            for j in range(c):
+                axs[i,j].imshow(gen_imgs[j,:,:,s_i[i]], cmap='gray')
+                axs[i,j].set_title(titles[j])
+                axs[i,j].axis('off')
+
+        fig.savefig('images/{0}/{0}_{1}/{2}_{3}.png'.format(self.dataset_name, p, epoch, batch_i))
+        plt.close()
+
+    def write_log(self, logs, batch_no):
+        names = ['train_loss', 'discriminator_loss', 'generator_loss']
+        for name, value in zip(names, logs):
+            summary = tf.Summary()
+            summary_value = summary.value.add()
+            summary_value.simple_value = value
+            summary_value.tag = name
+            self.tensorboard.writer.add_summary(summary, batch_no)
+            self.tensorboard.writer.flush()
+
     def calculate_stack_manipulation(self):
-        if self.enhancement == Enhancement.SPATIAL_UP:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'up')
-        elif self.enhancement == Enhancement.FREQUENCY_UP:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'up')
-        elif self.enhancement == Enhancement.FREQUENCY_MIN:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'min')
-        elif self.enhancement == Enhancement.GENERATIVE_SPATIAL:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')
-        elif self.enhancement == Enhancement.GENERATIVE_FREQUENCY:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')
+        if self.manipulation == MANIPULATION.SPATIAL_UP:
+            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'up')[1]
+        elif self.manipulation == MANIPULATION.SPATIAL_DOWN:
+            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')[1]
+        elif self.manipulation == MANIPULATION.SPATIAL_MIN:
+            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'min')[1]
+        elif self.manipulation == MANIPULATION.FREQUENCY_UP:
+            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'up')[1]
+        elif self.manipulation == MANIPULATION.FREQUENCY_DOWN:
+            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')[1]
+        elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
+            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'min')[1]
+        elif self.manipulation == MANIPULATION.GENERATIVE_SPATIAL:
+            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')[1]
+        elif self.manipulation == MANIPULATION.GENERATIVE_FREQUENCY:
+            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')[1]
         return stack_diff
 
     def manipulate_input_stack(self, inputlayer):
-        pad_crop = ( (0, 0), (0, 0), hp.calculate_padding_value(self.e_v) )
-        if self.enhancement == Enhancement.SPATIAL_UP:
+        pad_crop = ( (0,0), (0,0), hp.calculate_pad_crop_value(self.e_v) )
+        if self.manipulation == MANIPULATION.SPATIAL_UP:
             output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
-        elif self.enhancement == Enhancement.FREQUENCY_UP:
-            print(inputlayer)
-            input = tf.placeholder(tf.complex64)
-            sess = tf.InteractiveSession()
-            sess.run()
-
-            inputlayer = tf.cast(inputlayer, tf.complex64)
-            print(inputlayer)
-            vol_fft = tf.spectral.fft3d(inputlayer)
-
-            vol_fftshift = vol_fft.eval()
-            vol_fftshift = np.fft.fftshift(vol_fftshift)
-            vol_fft_crop = tf.Variable(vol_fftshift)
-            vol_fft_crop = ZeroPadding3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
-            vol_fftshift = vol_fft_crop.eval()
-            vol_fftshift = np.fft.ifftshift(vol_fftshift)
-            vol_fft = tf.Variable(vol_fftshift)
-            output = tf.ifft3d(vol_fft)
-            output = tf.abs(output)
-            output = tf.round(output)
-            sess.close()
-
+        elif self.manipulation == MANIPULATION.SPATIAL_DOWN:
+            output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
+        elif self.manipulation == MANIPULATION.SPATIAL_MIN:
+            x = hp.calculate_stack_resize(self.vol_depth, 'down')[0]
+            if 2**x < self.vol_depth:
+                output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
+            else:
+                output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
+        elif self.manipulation == MANIPULATION.FREQUENCY_UP:
+            print('MANIPULATION.FREQUENCY_UP not yet implemented')
+        elif self.manipulation == MANIPULATION.FREQUENCY_DOWN:
+            print('MANIPULATION.FREQUENCY_DOWN not yet implemented')
+        elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
+            print('MANIPULATION.FREQUENCY_MIN not yet implemented')
+        elif self.manipulation == MANIPULATION.GENERATIVE_SPATIAL:
+            print('MANIPULATION.GENERATIVE_SPATIAL not yet implemented')
+        elif self.manipulation == MANIPULATION.GENERATIVE_FREQUENCY:
+            print('MANIPULATION.GENERATIVE_FREQUENCY not yet implemented')
         return output
 
     def manipulate_output_stack(self, inputlayer):
-        pad_crop = ( (0, 0), (0, 0), hp.calculate_padding_value(self.e_v) )
-        if self.enhancement == Enhancement.SPATIAL_UP:
+        pad_crop = ( (0, 0), (0, 0), hp.calculate_pad_crop_value(self.e_v) )
+        if self.manipulation == MANIPULATION.SPATIAL_UP:
             output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
-        elif self.enhancement == Enhancement.FREQUENCY_UP:
-            vol_fft = tf.spectral.fft3d(inputlayer)
-            sess = tf.InteractiveSession()
-            vol_fftshift = vol_fft.eval()
-            vol_fftshift = np.fft.fftshift(vol_fftshift)
-            vol_fft_crop = tf.Variable(vol_fftshift)
-            vol_fft_crop = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
-            vol_fftshift = vol_fft_crop.eval()
-            vol_fftshift = np.fft.ifftshift(vol_fftshift)
-            vol_fft = tf.Variable(vol_fftshift)
-            output = tf.ifft3d(vol_fft)
-            output = tf.abs(output)
-            output = tf.round(output)
-            sess.close()
-
+        elif self.manipulation == MANIPULATION.SPATIAL_DOWN:
+            output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
+        elif self.manipulation == MANIPULATION.SPATIAL_MIN:
+            x = hp.calculate_stack_resize(self.vol_depth, 'down')[0]
+            if 2**x < self.vol_depth:
+                output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
+            else:
+                output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
+        elif self.manipulation == MANIPULATION.FREQUENCY_UP:
+            print('MANIPULATION.FREQUENCY_UP not yet implemented')
+        elif self.manipulation == MANIPULATION.FREQUENCY_DOWN:
+            print('MANIPULATION.FREQUENCY_DOWN not yet implemented')
+        elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
+            print('MANIPULATION.FREQUENCY_MIN not yet implemented')
+        elif self.manipulation == MANIPULATION.GENERATIVE_SPATIAL:
+            print('MANIPULATION.GENERATIVE_SPATIAL not yet implemented')
+        elif self.manipulation == MANIPULATION.GENERATIVE_FREQUENCY:
+            print('MANIPULATION.GENERATIVE_FREQUENCY not yet implemented')
         return output
 
-
-    # def downsample(d, fourier_transform=False):
-    #     '''
-    #         remove padding of the stack depth from 4 to 3
-    #     ''
-    #     vol_fft = vol_fft[:,:,:3]
-    #     back = tf.spectral.irfft3d(vol_fft)
-    #     back = tf.abs(back)
-    #     back = tf.round(back)
-    #
-    #     return back
+    def resize_stack(self, inputlayer, upsample, batch_size=1):
+        '''
+            CAUTION: this works just for images with 1 channel,
+                     because of the resize interpolation is between z-axes and channel(=1)
+        '''
+        if upsample:
+            y = self.calculate_stack_manipulation()
+        else:
+            y = self.calculate_stack_manipulation()*(-1)
+        # print('resize_stack_0:', inputlayer.shape)
+        transposed = tf.transpose( inputlayer, [0,3,4,1,2] )
+        # print('resize_stack_1:', transposed.shape)
+        calc_shape = (batch_size, self.vol_depth, self.channels, self.vol_rows*self.vol_cols)
+        reshaped = tf.reshape( transposed, calc_shape )
+        # print('resize_stack_2:', reshaped.shape)
+        new_size = [self.vol_depth + y, 1]
+        resized = tf.image.resize_images( reshaped , new_size, method=tf.image.ResizeMethod.BILINEAR )
+        # print('resize_stack_3:', resized.shape, int(resized.shape[1]))
+        calc_shape = (batch_size, int(resized.shape[1]), self.channels, self.vol_rows, self.vol_cols)
+        reshaped = tf.reshape( resized, calc_shape )
+        # print('resize_stack_4:', reshaped.shape)
+        transposed = tf.transpose( reshaped, [0,3,4,1,2] )
+        # print('resize_stack_5:', transposed.shape)
+        return transposed
