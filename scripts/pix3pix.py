@@ -24,7 +24,7 @@ class MANIPULATION(Flag):
     FREQUENCY_UP = auto()           # noch nicht erledigt
     FREQUENCY_DOWN = auto()         # noch nicht erledigt
     FREQUENCY_MIN = auto()          # noch nicht erledigt
-    GENERATIVE_SPATIAL = auto()     # muss noch genauer überlegt werden     # noch nicht erledigt
+    GENERATIVE_SPATIAL = auto()     # muss noch genauer überlegt werden   # noch nicht erledigt
     GENERATIVE_FREQUENCY = auto()   # muss noch genauer überlegt werden   # noch nicht erledigt
 
 
@@ -151,10 +151,12 @@ class Pix3Pix():
         print('generator-model input:\t\t', d0.shape)
         if not self.depth_two_potency:
             d0_m = self.manipulate_input_stack(d0)
-            self.resize_stack(d0, upsample=True)
+            # d0_m = self.resize_stack(d0, upsample=True)
+            # d0_m = self.resize_stack_keras(d0, upsample=True)
+            print('generator-resize:\t\t', d0_m.shape)
 
         self.stack_downsamling.append(int(d0.shape[3])); c = 0
-        print('generator-resize:', d0_m.shape)
+
         # Downsampling
         if not self.depth_two_potency:
             d1 = conv3d(d0_m, self.gf, bn=False); c += 1
@@ -268,7 +270,6 @@ class Pix3Pix():
 
         time_elapsed = datetime.datetime.now() - start_time
         print('\nFinish training in (hh:mm:ss.ms) {}'.format(time_elapsed))
-        return self.discriminator, self.generator, self.combined
 
     def sample_images(self, epoch, batch_i, p):
         os.makedirs('images/{0}/{0}_{1}'.format(self.dataset_name, p), exist_ok=True)
@@ -335,13 +336,15 @@ class Pix3Pix():
         elif self.manipulation == MANIPULATION.SPATIAL_DOWN:
             output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
         elif self.manipulation == MANIPULATION.SPATIAL_MIN:
-            x = hp.calculate_stack_resize(self.vol_depth, 'down')[0]
+            x = hp.calculate_stack_resize(self.vol_depth, 'min')[0]
             if 2**x < self.vol_depth:
                 output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
             else:
                 output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
         elif self.manipulation == MANIPULATION.FREQUENCY_UP:
             print('MANIPULATION.FREQUENCY_UP not yet implemented')
+
+            self.fourier_transform(inputlayer, pad_crop)
         elif self.manipulation == MANIPULATION.FREQUENCY_DOWN:
             print('MANIPULATION.FREQUENCY_DOWN not yet implemented')
         elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
@@ -359,13 +362,14 @@ class Pix3Pix():
         elif self.manipulation == MANIPULATION.SPATIAL_DOWN:
             output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
         elif self.manipulation == MANIPULATION.SPATIAL_MIN:
-            x = hp.calculate_stack_resize(self.vol_depth, 'down')[0]
+            x = hp.calculate_stack_resize(self.vol_depth, 'min')[0]
             if 2**x < self.vol_depth:
                 output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
             else:
                 output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
         elif self.manipulation == MANIPULATION.FREQUENCY_UP:
             print('MANIPULATION.FREQUENCY_UP not yet implemented')
+            print(tf.keras.backend.get_session())
         elif self.manipulation == MANIPULATION.FREQUENCY_DOWN:
             print('MANIPULATION.FREQUENCY_DOWN not yet implemented')
         elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
@@ -376,27 +380,86 @@ class Pix3Pix():
             print('MANIPULATION.GENERATIVE_FREQUENCY not yet implemented')
         return output
 
-    def resize_stack(self, inputlayer, upsample, batch_size=1):
+    def fourier_transform(self, inputlayer, pad_crop):
+        # TODO:  das hier mit neuem shift aus hp.fftshift machen und umsetzen
+        # input = tf.placeholder(dtype=tf.float32)
+        # arr = tf.keras.backend.get_session().run(inputlayer, feed_dict={x: input})
+        # arr = input.eval(session=tf.keras.backend.get_session())
+        # inputlayer = tf.cast(inputlayer, tf.complex64)
+        # vol_fft = tf.fft3d(inputlayer)
+        # vol_fft_shift = tf.manip.roll(vol_fft, shift=[1,-4,7], axis=[1,2,3])
+        pass
+
+    def resize_stack(self, inputlayer, upsample):
         '''
-            CAUTION: this works just for images with 1 channel,
-                     because of the resize interpolation is between z-axes and channel(=1)
+            CAUTION: - this works just for images with 1 channel,
+                       because of the resize interpolation is between z-axes and channel(=1)
+                     - batch does not have to be considered
+            1. transpose(inputlayer): [batch, height, width, depth, channels]     => [batch, depth, channels, height, width]
+            2. reshape(transposed):   [batch, depth, channels, height, width]     => [batch, depth, channels, height*width]
+            3. resize(reshaped):      [batch, depth, channels, height*width]      => [batch, depth_new, channels, height*width]
+            4. reshaped(resized):     [batch, depth_new, channels, height*width]  => [batch, depth_new, channels, height, width]
+            5. transpose(reshaped):   [batch, depth_new, channels, height, width] => [batch, height, width, depth_new, channels]
+
         '''
+        from keras import backend as K
+        from keras.backend import tf as ktf
+        from keras.layers import Lambda
+
+        if self.vol_depth == 3:
+            print('resize_stack: CAUTION - this works just for images with 1 channel')
         if upsample:
             y = self.calculate_stack_manipulation()
         else:
             y = self.calculate_stack_manipulation()*(-1)
-        # print('resize_stack_0:', inputlayer.shape)
-        transposed = tf.transpose( inputlayer, [0,3,4,1,2] )
-        # print('resize_stack_1:', transposed.shape)
-        calc_shape = (batch_size, self.vol_depth, self.channels, self.vol_rows*self.vol_cols)
-        reshaped = tf.reshape( transposed, calc_shape )
-        # print('resize_stack_2:', reshaped.shape)
-        new_size = [self.vol_depth + y, 1]
-        resized = tf.image.resize_images( reshaped , new_size, method=tf.image.ResizeMethod.BILINEAR )
-        # print('resize_stack_3:', resized.shape, int(resized.shape[1]))
-        calc_shape = (batch_size, int(resized.shape[1]), self.channels, self.vol_rows, self.vol_cols)
-        reshaped = tf.reshape( resized, calc_shape )
-        # print('resize_stack_4:', reshaped.shape)
-        transposed = tf.transpose( reshaped, [0,3,4,1,2] )
-        # print('resize_stack_5:', transposed.shape)
+        print('resize_stack_0:', inputlayer.shape)
+        # transposed = tf.transpose( inputlayer, [0,3,4,1,2] )
+        transposed = K.permute_dimensions( inputlayer, [0,3,4,1,2] )
+        print('resize_stack_1:', transposed.shape)
+
+        calc_shape = (tf.shape(inputlayer)[0], self.vol_depth, self.channels, self.vol_rows*self.vol_cols)
+        # reshaped = tf.reshape( transposed, calc_shape )
+        reshaped = K.reshape( transposed, calc_shape )
+        print('resize_stack_2:', reshaped.shape)
+
+        new_size = (self.vol_depth + y, 1) #[self.vol_depth + y, 1]
+        # resized = tf.image.resize_images( reshaped , new_size, method=tf.image.ResizeMethod.BILINEAR )
+        resized = Lambda(lambda image: ktf.image.resize_images( image , new_size, method=tf.image.ResizeMethod.BILINEAR ))(reshaped)
+        print('resize_stack_3:', resized.shape)
+
+        calc_shape = (tf.shape(resized)[0], int(resized.shape[1]), self.channels, self.vol_rows, self.vol_cols)
+        # reshaped = tf.reshape( resized, calc_shape )
+        reshaped = K.reshape( resized, calc_shape )
+        print('resize_stack_4:', reshaped.shape)
+
+        # transposed = tf.transpose( reshaped, [0,3,4,1,2] )
+        transposed = K.permute_dimensions( reshaped, [0,3,4,1,2] )
+        print('resize_stack_5:', transposed.shape)
+
         return transposed
+
+    def resize_stack_keras(self, inputlayer, upsample):
+        # The problem lied in the fact that using every tf operation should be encapsulated by either:
+        # 1. Using keras.backend functions,
+        # 2. Lambda layers,
+        # 3. Designated keras functions with the same behavior.
+        # When you are using tf operation - you are getting tf tensor object which doesn't have history field. When you use keras functions you will get keras.tensors.
+
+        from keras import backend as K
+        from keras.layers import Lambda
+
+        if self.vol_depth == 3:
+            print('resize_stack: CAUTION - this works just for images with 1 channel')
+        if upsample:
+            y = self.calculate_stack_manipulation()
+        else:
+            y = self.calculate_stack_manipulation()*(-1)
+
+        n_height = n_width = 1
+        n_depth = np.round((self.vol_depth + y) / self.vol_depth)
+
+        print(upsample, y, n_height, n_depth)
+        #'numpy.float64 object cannot be interpreted as an integer...'
+        # resizes = K.resize_volumes(inputlayer, n_height, n_width, 1, data_format="channels_last")
+
+        return resizes
