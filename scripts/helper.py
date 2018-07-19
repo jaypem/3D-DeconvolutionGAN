@@ -4,8 +4,9 @@ import selenium_scrapeImages as scraper
 import cv2
 import imutils
 from datetime import datetime
-
+from warnings import warn
 from matplotlib import pyplot as plt
+import tensorflow as tf
 
 
 '''
@@ -129,14 +130,13 @@ def calculate_stack_resize(s, flag):
         i = i if s <= p[i] else i+1
         x, y = arr[i], diff[i]
     else:
-        print('no valid manipulation parameter')
+        warn('no valid manipulation parameter')
 
-    return y
+    return x, y
 
 def calculate_pad_crop_value(value):
     div = value / 2
     return (np.abs(int(np.floor(div))), int(np.ceil(div)))
-
 
 def check_for_two_potency(value):
     arr = np.arange(1,12)
@@ -167,3 +167,36 @@ def gen_plot(fig):
     plt.savefig(buf, format='png')
     buf.seek(0)
     return buf
+
+# TODO: beide Funktionen mit tf.manip.roll versehen um invariant gg. geraden dimensionsanzahlen zu schaffen
+def fftshift3d(tensor):
+    """
+    @author: soenke
+    Shifts high frequency elements into the center of the filter.
+    Works on last 3 dims of tensor (on all for size-3-tensors)
+    Works only for even number of elements along these dims.
+    """
+    warn("Only implemented for even number of elements in each axis.")
+    top, bottom = tf.split(tensor, 2, -1)
+    tensor = tf.concat([bottom, top], -1)
+    left, right = tf.split(tensor, 2, -2)
+    tensor = tf.concat([right, left], -2)
+    front, back = tf.split(tensor, 2, -3)
+    tensor = tf.concat([back, front], -3)
+    return tensor
+
+def ifftshift3d(tensor):
+    """
+    @author: soenke
+    Shifts high frequency elements into the center of the filter.
+    Works on last 3 dims of tensor (on all for size-3-tensors)
+    Works only for even number of elements along these dims.
+    """
+    warn("Only implemented for even number of elements in each axis.")
+    left, right = tf.split(tensor, 2, -2)
+    tensor = tf.concat([right, left], -2)
+    top, bottom = tf.split(tensor, 2, -1)
+    tensor = tf.concat([bottom, top], -1)
+    front, back = tf.split(tensor, 2, -3)
+    tensor = tf.concat([back, front], -3)
+    return tensor
