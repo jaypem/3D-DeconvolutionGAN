@@ -38,23 +38,30 @@ class DataLoader3D():
 
         vols_A = []
         vols_B = []
-        for vol_path in batch_images:
-            vol_A = self.imread(vol_path)
+        for vol in batch_images:
+            vol_A = self.imread(vol)
             # interpolation: default bi-linear
-            vol_A = resize(vol_A, self.vol_size)
+            vol_A = resize(vol_A, self.vol_size)#, anti_aliasing=True)
+            vols_A.extend([vol_A])
 
             vol_B = deconv.conv3d_fft(vol_A, self.otf)
             vol_B = resize(vol_B, self.vol_size)#, anti_aliasing=True)
-
-            vols_A.extend([vol_A])
             vols_B.extend([vol_B])
 
             if add_noise:
+                # put noise on original and convolved image
                 poisson_A, poisson_B = deconv.add_poisson(vol_A), deconv.add_poisson(vol_B)
                 gauss_A, gauss_B = deconv.add_gaussian(vol_A), deconv.add_gaussian(vol_B)
-                flip_A, flip_B = np.fliplr(vol_A), np.fliplr(vol_B)
-                roll_A, roll_B = np.roll(vol_A, int(vol_A.shape[0]*.1)), np.roll(vol_B, int(vol_B.shape[0]*.1))
-                shift_A, shift_B = deconv.add_shift(vol_A), deconv.add_shift(vol_B)
+
+                # manipulate original image and convolve the manipulated images after that
+                flip_A = np.fliplr(vol_A)
+                roll_A = np.roll(vol_A, int(vol_A.shape[0]*.1))
+                shift_A = deconv.add_shift(vol_A)
+
+                flip_B = deconv.conv3d_fft(flip_A, self.otf)
+                roll_B = deconv.conv3d_fft(roll_A, self.otf)
+                shift_B = deconv.conv3d_fft(shift_A, self.otf)
+
                 vols_A.extend([poisson_A, gauss_A, flip_A, roll_A, shift_A])
                 vols_B.extend([poisson_B, gauss_B, flip_B, roll_B, shift_B])
 
@@ -76,18 +83,21 @@ class DataLoader3D():
             vols_A, vols_B = [], []
             for vol in batch:
                 vol_A = self.imread(vol)
+
+                # TODO: hier muss das bild jetzt manipuiert werden (mit methoden von pix3pix-Methode)
                 # interpolation: default bi-linear
                 vol_A = resize(vol_A, self.vol_size)#, anti_aliasing=True)
                 vols_A.extend([vol_A])
 
                 vol_B = deconv.conv3d_fft(vol_A, self.otf)
+                # TODO: hier muss das bild jetzt manipuiert werden (mit methoden von pix3pix-Methode)
                 vol_B = resize(vol_B, self.vol_size)#, anti_aliasing=True)
                 vols_B.extend([vol_B])
 
                 if add_noise:
                     # put noise on original and convolved image
                     poisson_A, poisson_B = deconv.add_poisson(vol_A), deconv.add_poisson(vol_B)
-                    gauss_A, gauss_B = deconv.add_gaussian(vol_A), deconv.add_gaussian(vol_B)
+                    gauss_A, gauss_B = vol_A + deconv.create_gaussian_noise(vol_A), vol_B + deconv.create_gaussian_noise(vol_B)
 
                     # manipulate original image and convolve the manipulated images after that
                     flip_A = np.fliplr(vol_A)
@@ -103,7 +113,7 @@ class DataLoader3D():
 
             vols_A = np.array(vols_A)/127.5 - 1.
             vols_B = np.array(vols_B)/127.5 - 1.
-
+            
             yield vols_A, vols_B
 
     def imread(self, path, colormode='L'):
@@ -162,6 +172,16 @@ class DataLoader3D():
         writer.close()
         sys.stdout.flush()
         print('Time for writeTFRecord :\t\t', time.time() - start_otf, 's')
+
+    def input_fn(self, batch_size):
+        files = tf.data.Dataset.list_files(FLAGS.data_dir)
+        dataset = tf.data.TFRecordDataset(files, num_parallel_reads=4)
+        dataset = dataset.shuffle(2048) # Sliding window of 2048 records
+        dataset = dataset.repeat(NUM_EPOCHS)
+        dataset = dataset.map(parser_fn, num_parallel_calls=64)
+        dataset = dataset.batch(batch_size)
+        dataset = dataset.prefetch(2)
+        return dataset
 
     # TODO: die variante verwerfen und read_and_decode testen/fixen/verwenden
     def readTFRecords(self, filenames, epochs, batches=1, labels_given=False):
