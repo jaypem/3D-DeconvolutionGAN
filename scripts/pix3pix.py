@@ -24,8 +24,6 @@ class MANIPULATION(Flag):
     FREQUENCY_UP = auto()           # noch nicht erledigt
     FREQUENCY_DOWN = auto()         # noch nicht erledigt
     FREQUENCY_MIN = auto()          # noch nicht erledigt
-    GENERATIVE_SPATIAL = auto()     # muss noch genauer überlegt werden   # noch nicht erledigt
-    GENERATIVE_FREQUENCY = auto()   # muss noch genauer überlegt werden   # noch nicht erledigt
 
 
 class Pix3Pix():
@@ -44,6 +42,8 @@ class Pix3Pix():
             self.e_v = 0
         else:
             self.e_v = self.calculate_stack_manipulation()
+            self.vol_depth += self.e_v
+            self.vol_shape = (self.vol_rows, self.vol_cols, self.vol_depth, self.channels)
 
         # Configure data loader
         self.dataset_name = d_name
@@ -149,19 +149,10 @@ class Pix3Pix():
         # Image input (distinguish for two potency stack number)
         d0 = Input(shape=self.vol_shape)
         print('generator-model input:\t\t', d0.shape)
-        if not self.depth_two_potency:
-            d0_m = self.manipulate_input_stack(d0)
-            # d0_m = self.resize_stack(d0, upsample=True)
-            # d0_m = self.resize_stack_keras(d0, upsample=True)
-            print('generator-resize:\t\t', d0_m.shape)
-
         self.stack_downsamling.append(int(d0.shape[3])); c = 0
 
         # Downsampling
-        if not self.depth_two_potency:
-            d1 = conv3d(d0_m, self.gf, bn=False); c += 1
-        else:
-            d1 = conv3d(d0, self.gf, bn=False); c += 1
+        d1 = conv3d(d0, self.gf, bn=False); c += 1
         d2 = conv3d(d1, self.gf*2); c += 1
         d3 = conv3d(d2, self.gf*4); c += 1
         d4 = conv3d(d3, self.gf*8); c += 1
@@ -180,10 +171,7 @@ class Pix3Pix():
 
         u7 = UpSampling3D(size=2, data_format="channels_last")(u6)
         output_vol = Conv3D(self.channels, kernel_size=4, strides=1, padding='same', activation='tanh')(u7)
-        print('generator-resize:', output_vol.shape)
-        # model output (distinguish for two potency stack number)
-        if not self.depth_two_potency:
-            output_vol = self.manipulate_output_stack(output_vol)
+
         print('generator-model output:\t\t', d0.shape, output_vol.shape)
         return Model(d0, output_vol, name='generator')
 
@@ -200,16 +188,9 @@ class Pix3Pix():
         # Image input (distinguish for two potency stack number)
         vol_A = Input(shape=self.vol_shape)
         vol_B = Input(shape=self.vol_shape)
-        if not self.depth_two_potency:
-            vol_A_m = self.manipulate_input_stack(vol_A)
-            vol_B_m = self.manipulate_input_stack(vol_B)
-        print('discriminator-resize:', vol_A_m.shape, vol_B_m.shape)
 
         # Concatenate image and conditioning image by channels to produce input
-        if self.depth_two_potency:
-            combined_vols = Concatenate(axis=-1)([vol_A, vol_B])
-        else:
-            combined_vols = Concatenate(axis=-1)([vol_A_m, vol_B_m])
+        combined_vols = Concatenate(axis=-1)([vol_A, vol_B])
 
         d1 = d_layer(combined_vols, self.df, bn=False)
         d2 = d_layer(d1, self.df*2)
@@ -237,7 +218,7 @@ class Pix3Pix():
             for batch_i, (vols_A, vols_B) in enumerate(self.data_loader.load_batch(batch_size, add_noise)):
                 # expand dimension/reshape images
                 vols_A, vols_B = np.expand_dims(vols_A, axis=4), np.expand_dims(vols_B, axis=4)
-
+                
                 # ---------------------
                 #  Train Discriminator
                 # ---------------------
@@ -323,10 +304,6 @@ class Pix3Pix():
             stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')[1]
         elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
             stack_diff = hp.calculate_stack_resize(self.vol_depth, 'min')[1]
-        elif self.manipulation == MANIPULATION.GENERATIVE_SPATIAL:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')[1]
-        elif self.manipulation == MANIPULATION.GENERATIVE_FREQUENCY:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')[1]
         return stack_diff
 
     def manipulate_input_stack(self, inputlayer):
@@ -349,10 +326,6 @@ class Pix3Pix():
             print('MANIPULATION.FREQUENCY_DOWN not yet implemented')
         elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
             print('MANIPULATION.FREQUENCY_MIN not yet implemented')
-        elif self.manipulation == MANIPULATION.GENERATIVE_SPATIAL:
-            print('MANIPULATION.GENERATIVE_SPATIAL not yet implemented')
-        elif self.manipulation == MANIPULATION.GENERATIVE_FREQUENCY:
-            print('MANIPULATION.GENERATIVE_FREQUENCY not yet implemented')
         return output
 
     def manipulate_output_stack(self, inputlayer):
@@ -374,10 +347,6 @@ class Pix3Pix():
             print('MANIPULATION.FREQUENCY_DOWN not yet implemented')
         elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
             print('MANIPULATION.FREQUENCY_MIN not yet implemented')
-        elif self.manipulation == MANIPULATION.GENERATIVE_SPATIAL:
-            print('MANIPULATION.GENERATIVE_SPATIAL not yet implemented')
-        elif self.manipulation == MANIPULATION.GENERATIVE_FREQUENCY:
-            print('MANIPULATION.GENERATIVE_FREQUENCY not yet implemented')
         return output
 
     def fourier_transform(self, inputlayer, pad_crop):
