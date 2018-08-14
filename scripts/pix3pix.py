@@ -1,9 +1,13 @@
+# -*- coding: utf-8 -*-
+"""
+@author: philipp
+"""
+
 import numpy as np
 import time
 import datetime
 import os
 import matplotlib.pyplot as plt
-from enum import Flag, auto
 import tensorflow as tf
 
 from keras.layers import Input, Concatenate, BatchNormalization, Dropout, Flatten
@@ -17,42 +21,28 @@ from data_loader3D import DataLoader3D
 import helper as hp
 
 
-class MANIPULATION(Flag):
-    SPATIAL_UP = auto()
-    SPATIAL_DOWN = auto()
-    SPATIAL_MIN = auto()
-    FREQUENCY_UP = auto()           # noch nicht erledigt
-    FREQUENCY_DOWN = auto()         # noch nicht erledigt
-    FREQUENCY_MIN = auto()          # noch nicht erledigt
-
 
 class Pix3Pix():
-    def __init__(self, vol_resize, d_name, stack_manipulation):
-        # Input shape
-        self.vol_rows = vol_resize[0]
-        self.vol_cols = vol_resize[1]
-        self.vol_depth = vol_resize[2]
-        self.channels = 1
-        self.vol_shape = (self.vol_rows, self.vol_cols, self.vol_depth, self.channels)
-
-        # and distinguish for stack manipulation
-        self.depth_two_potency = hp.check_for_two_potency(self.vol_depth)
-        self.manipulation = stack_manipulation
-        if self.depth_two_potency:
-            self.e_v = 0
-        else:
-            self.e_v = self.calculate_stack_manipulation()
-            self.vol_depth += self.e_v
-            self.vol_shape = (self.vol_rows, self.vol_cols, self.vol_depth, self.channels)
-
+    def __init__(self, vol_original, vol_resize, d_name, stack_manipulation, simulation, ganhacks):
+        self.ganhacks = ganhacks
         # Configure data loader
         self.dataset_name = d_name
-        self.data_loader = DataLoader3D(dataset_name=self.dataset_name,
-                                      vol_resize=self.vol_shape)
+        self.data_loader = DataLoader3D(simulation=simulation,
+                                        d_name=self.dataset_name,
+                                        manipulation=stack_manipulation,
+                                        vol_original=vol_original,
+                                        vol_resize=vol_resize)
 
+        # Input shape
+        self.channels = 1
+        self.vol_shape = self.data_loader.vol_resize+(self.channels,)
+        self.vol_rows = self.vol_shape[0]
+        self.vol_depth = self.vol_shape[2]
+
+        print('mögliche Fehlerquelle bei Berechnung von patch_depth -> self.disc_patch : ...2**3))#4))')
         # Calculate output shape of D (PatchGAN)
         patch = int(self.vol_rows / 2**3) #4)
-        patch_depth = int(np.ceil(self.vol_depth / 2**4))
+        patch_depth = int(np.ceil(self.vol_depth / 2**3))#4))
         self.disc_patch = (patch, patch, patch_depth, 1)
         # self.disc_patch = (patch*patch*patch_depth,)
 
@@ -98,13 +88,13 @@ class Pix3Pix():
 
         # Save the model weights after each epoch if the validation loss decreased
         p = time.strftime("%Y-%m-%d_%H_%M_%S")
-        self.checkpointer = ModelCheckpoint(filepath="logs/{}_CP".format(p), verbose=1,
-                                            save_best_only=True, mode='min')
+        # self.checkpointer = ModelCheckpoint(filepath="logs/{}_CP".format(p), verbose=1,
+                                            # save_best_only=True, mode='min')
 
-        self.tensorboard = TensorBoard(log_dir="logs/{}".format(p), histogram_freq=0, batch_size=1,
-            write_graph=False, write_grads=True, write_images=False, embeddings_freq=0,
-            embeddings_layer_names=None, embeddings_metadata=None)
-        self.tensorboard.set_model(self.combined)
+        # self.tensorboard = TensorBoard(log_dir="logs/{}".format(p), histogram_freq=0, batch_size=1,
+        #     write_graph=False, write_grads=True, write_images=False, embeddings_freq=0,
+        #     embeddings_layer_names=None, embeddings_metadata=None)
+        # self.tensorboard.set_model(self.combined)
 
         print('finish Pix3Pix __init__')
 
@@ -142,6 +132,7 @@ class Pix3Pix():
                 u = Dropout(dropout_rate)(u)
             u = BatchNormalization(momentum=0.8)(u)
 
+            # TODO: hier stimmt die Ausgabe nicht, von data_loader-objekt holen
             print('upsampling:\t\t\t', u.shape)
             u = Concatenate()([u, skip_input])
             return u
@@ -208,24 +199,33 @@ class Pix3Pix():
 
         # Adversarial loss ground truths (6 = 1 original volume + 5 noise volumes)
         if add_noise:
-            valid = np.ones((6*batch_size,) + self.disc_patch)
-            fake = np.zeros((6*batch_size,) + self.disc_patch)
+            valid = np.ones((5*batch_size,) + self.disc_patch)
+            fake = np.zeros((5*batch_size,) + self.disc_patch)
         else:
             valid = np.ones((batch_size,) + self.disc_patch)
             fake = np.zeros((batch_size,) + self.disc_patch)
 
+        if self.ganhacks:
+            fake_label = np.around(np.random.uniform(low=0.0, high=0.3), decimals=1)
+            fake = fake + fake_label
+            true_label = np.around(np.random.uniform(low=0.7, high=1.2), decimals=1)
+            valid = valid * true_label
+
         for epoch in range(epochs):
             for batch_i, (vols_A, vols_B) in enumerate(self.data_loader.load_batch(batch_size, add_noise)):
-                # expand dimension/reshape images
+                # expand channel dimension/reshape images
                 vols_A, vols_B = np.expand_dims(vols_A, axis=4), np.expand_dims(vols_B, axis=4)
-                
+
                 # ---------------------
                 #  Train Discriminator
                 # ---------------------
+                # TODO: hier evtl gpu_options = tf.GPUOptions(allow_growth=True)
+                    # session = tf.InteractiveSession(config=tf.ConfigProto(gpu_options=gpu_options))
+                    # GPU gesteuerte Session starten
 
                 # Condition on B and generate a translated version
                 fake_A = self.generator.predict(vols_B)
-
+                # print('train-shapes:',vols_A.shape, vols_B.shape, valid.shape, self.disc_patch)
                 # Train the discriminators (original images = real / generated = Fake)
                 d_loss_real = self.discriminator.train_on_batch([vols_A, vols_B], valid)
                 d_loss_fake = self.discriminator.train_on_batch([fake_A, vols_B], fake)
@@ -253,32 +253,40 @@ class Pix3Pix():
         print('\nFinish training in (hh:mm:ss.ms) {}'.format(time_elapsed))
 
     def sample_images(self, epoch, batch_i, p):
-        os.makedirs('images/{0}/{0}_{1}'.format(self.dataset_name, p), exist_ok=True)
+        os.makedirs('images/{0}/{0}_{1}_{2}'.format(self.dataset_name, p, self.data_loader.manipulation.name), exist_ok=True)
         r, c = 3, 3
 
         imgs_A, imgs_B = self.data_loader.load_data(batch_size=1)
         imgs_A, imgs_B = np.expand_dims(imgs_A, axis=4), np.expand_dims(imgs_B, axis=4)
 
+        # TODO: methode schreiben, die nur "fake_A", "imgs_A" und "imgs_B" speichert
         fake_A = self.generator.predict(imgs_B)
 
-        gen_imgs = np.concatenate([imgs_B, fake_A, imgs_A])
+        gen_imgs = np.concatenate([imgs_A, imgs_B, fake_A])
 
         # Rescale images 0 - 1
         gen_imgs = 0.5 * gen_imgs + 0.5
         gen_imgs = np.squeeze(gen_imgs, axis=4)
 
-        titles = ['Condition', 'Generated', 'Original']
-        # select 'r' (default=3) random sorted stacks
-        s_i = np.sort(np.random.randint(low=0, high=gen_imgs.shape[3], size=r))
+        titles = ['Original-Volume', 'OTF-Condition', 'Generated-sample']
+        # select 'r' (default=3) random adjacent stacks (altogether min. 3 stacks)
+        s_i = np.random.randint(low=1, high=gen_imgs.shape[3]-1, size=1)[0]
+        s_i = [s_i-1, s_i, s_i+1]
 
-        fig, axs = plt.subplots(r, c, figsize=(20,20))
+        fig, axs = plt.subplots(nrows=r, ncols=c, figsize=(20,20))
+        t = '3 adjacent stacks from {}-dataset\nimage size: {}'.format(self.dataset_name, self.vol_shape)
+        plt.suptitle(t, fontsize=25)
+
         for i in range(r):
+            axs[i,0].set_ylabel('stack: {0}'.format(s_i[i]), fontsize=25)
             for j in range(c):
                 axs[i,j].imshow(gen_imgs[j,:,:,s_i[i]], cmap='gray')
-                axs[i,j].set_title(titles[j])
-                axs[i,j].axis('off')
+                axs[i,j].set_xticks([]); axs[i,j].set_yticks([])
+                axs[0,j].set_title(titles[j], fontsize=25)
 
-        fig.savefig('images/{0}/{0}_{1}/{2}_{3}.png'.format(self.dataset_name, p, epoch, batch_i))
+        fig.tight_layout()
+        plt.subplots_adjust(left=0.02, wspace=0, top=0.92)
+        fig.savefig('images/{0}/{0}_{1}_{4}/{2}_{3}_{4}.png'.format(self.dataset_name, p, epoch, batch_i, self.data_loader.manipulation.name))
         plt.close()
 
     def write_log(self, logs, batch_no):
@@ -291,73 +299,6 @@ class Pix3Pix():
             self.tensorboard.writer.add_summary(summary, batch_no)
             self.tensorboard.writer.flush()
 
-    def calculate_stack_manipulation(self):
-        if self.manipulation == MANIPULATION.SPATIAL_UP:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'up')[1]
-        elif self.manipulation == MANIPULATION.SPATIAL_DOWN:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')[1]
-        elif self.manipulation == MANIPULATION.SPATIAL_MIN:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'min')[1]
-        elif self.manipulation == MANIPULATION.FREQUENCY_UP:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'up')[1]
-        elif self.manipulation == MANIPULATION.FREQUENCY_DOWN:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'down')[1]
-        elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
-            stack_diff = hp.calculate_stack_resize(self.vol_depth, 'min')[1]
-        return stack_diff
-
-    def manipulate_input_stack(self, inputlayer):
-        pad_crop = ( (0,0), (0,0), hp.calculate_pad_crop_value(self.e_v) )
-        if self.manipulation == MANIPULATION.SPATIAL_UP:
-            output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
-        elif self.manipulation == MANIPULATION.SPATIAL_DOWN:
-            output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
-        elif self.manipulation == MANIPULATION.SPATIAL_MIN:
-            x = hp.calculate_stack_resize(self.vol_depth, 'min')[0]
-            if 2**x < self.vol_depth:
-                output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
-            else:
-                output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
-        elif self.manipulation == MANIPULATION.FREQUENCY_UP:
-            print('MANIPULATION.FREQUENCY_UP not yet implemented')
-
-            self.fourier_transform(inputlayer, pad_crop)
-        elif self.manipulation == MANIPULATION.FREQUENCY_DOWN:
-            print('MANIPULATION.FREQUENCY_DOWN not yet implemented')
-        elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
-            print('MANIPULATION.FREQUENCY_MIN not yet implemented')
-        return output
-
-    def manipulate_output_stack(self, inputlayer):
-        pad_crop = ( (0, 0), (0, 0), hp.calculate_pad_crop_value(self.e_v) )
-        if self.manipulation == MANIPULATION.SPATIAL_UP:
-            output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
-        elif self.manipulation == MANIPULATION.SPATIAL_DOWN:
-            output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
-        elif self.manipulation == MANIPULATION.SPATIAL_MIN:
-            x = hp.calculate_stack_resize(self.vol_depth, 'min')[0]
-            if 2**x < self.vol_depth:
-                output = ZeroPadding3D(padding=pad_crop, data_format="channels_last")(inputlayer)
-            else:
-                output = Cropping3D(cropping=pad_crop, data_format="channels_last")(inputlayer)
-        elif self.manipulation == MANIPULATION.FREQUENCY_UP:
-            print('MANIPULATION.FREQUENCY_UP not yet implemented')
-            print(tf.keras.backend.get_session())
-        elif self.manipulation == MANIPULATION.FREQUENCY_DOWN:
-            print('MANIPULATION.FREQUENCY_DOWN not yet implemented')
-        elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
-            print('MANIPULATION.FREQUENCY_MIN not yet implemented')
-        return output
-
-    def fourier_transform(self, inputlayer, pad_crop):
-        # TODO:  das hier mit neuem shift aus hp.fftshift machen und umsetzen
-        # input = tf.placeholder(dtype=tf.float32)
-        # arr = tf.keras.backend.get_session().run(inputlayer, feed_dict={x: input})
-        # arr = input.eval(session=tf.keras.backend.get_session())
-        # inputlayer = tf.cast(inputlayer, tf.complex64)
-        # vol_fft = tf.fft3d(inputlayer)
-        # vol_fft_shift = tf.manip.roll(vol_fft, shift=[1,-4,7], axis=[1,2,3])
-        pass
 
     def resize_stack(self, inputlayer, upsample):
         '''
@@ -406,29 +347,3 @@ class Pix3Pix():
         print('resize_stack_5:', transposed.shape)
 
         return transposed
-
-    def resize_stack_keras(self, inputlayer, upsample):
-        # The problem lied in the fact that using every tf operation should be encapsulated by either:
-        # 1. Using keras.backend functions,
-        # 2. Lambda layers,
-        # 3. Designated keras functions with the same behavior.
-        # When you are using tf operation - you are getting tf tensor object which doesn't have history field. When you use keras functions you will get keras.tensors.
-
-        from keras import backend as K
-        from keras.layers import Lambda
-
-        if self.vol_depth == 3:
-            print('resize_stack: CAUTION - this works just for images with 1 channel')
-        if upsample:
-            y = self.calculate_stack_manipulation()
-        else:
-            y = self.calculate_stack_manipulation()*(-1)
-
-        n_height = n_width = 1
-        n_depth = np.round((self.vol_depth + y) / self.vol_depth)
-
-        print(upsample, y, n_height, n_depth)
-        #'numpy.float64 object cannot be interpreted as an integer...'
-        # resizes = K.resize_volumes(inputlayer, n_height, n_width, 1, data_format="channels_last")
-
-        return resizes
