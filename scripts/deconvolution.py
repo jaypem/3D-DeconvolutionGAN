@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 @author: philipp
@@ -86,12 +85,23 @@ def create_gaussian_noise(vol, mean=0, var=0.1):
     sigma = var**0.5
     return np.random.normal(mean, sigma, vol.shape)
 
-def add_shift(vol):
+def flip_vol(vol):
+    return np.fliplr(vol)
+
+def roll_vol(vol, fraction=.1):
+    return np.roll(vol, int(vol.shape[0]*fraction))
+
+def add_affineTransformation(vol):
     import cv2
     num_rows, num_cols = vol.shape[:2]
     x, y = np.random.randint(low=5, high=20, size=2)
     translation_matrix = np.float32([ [1,0,x], [0,1,y] ])
     return cv2.warpAffine(vol, translation_matrix, (num_cols, num_rows))
+
+def add_logIntensityTransformation(vol):
+    c = 1/np.log(1+255)
+    # ret[ret < 0.] = 0 # might be used if bug occur
+    return c*np.log(1+vol).astype(dtype=np.float32)
 
 
 class Deconvolution_3D():
