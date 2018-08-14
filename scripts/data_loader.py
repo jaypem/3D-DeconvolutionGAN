@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import scipy
 from glob import glob
 import numpy as np
@@ -5,6 +7,7 @@ import matplotlib.pyplot as plt
 import cv2
 
 import helper as hp
+import deconvolution as deconv
 
 
 class DataLoader():
@@ -12,10 +15,12 @@ class DataLoader():
         self.dataset_name = dataset_name
         self.img_res = img_res
         self.f_type = filtertype
+        self.noise = True
 
     def load_data(self, batch_size=1, is_testing=False, k_size=5):
-        data_type = "train" if not is_testing else "test"
-        path = glob('../data/2D/google_search_images/%s/%s/*' % (self.dataset_name, data_type))
+        # data_type = "train" if not is_testing else "test"
+        # path = glob('../data/2D/google_search_images/%s/%s/*' % (self.dataset_name, data_type))
+        path = glob('../data/2D/google_search_images/%s/*' % (self.dataset_name))
 
         batch_images = np.random.choice(path, size=batch_size)
 
@@ -23,8 +28,20 @@ class DataLoader():
         imgs_B = []
         for img_path in batch_images:
             img_A = self.imread(img_path)
-            img_B = self.conv(img_A, radius_perc=.15)
-            # img_B = cv2.GaussianBlur(img_A.copy(), (k_size,k_size), 1)
+            img_B = deconv.conv2d(img_A, f_type='ft_low_pass', radius_perc=.07)
+
+            # TODO: noise wie in 3D daneben legen
+            if self.noise:
+                # poisson noise
+                NPhot = 100
+                img_B = img_B.astype(float)/np.max(img_B)*NPhot
+                img_B = np.random.poisson(img_B)
+
+                # gaussian noise
+                sigma = 1
+                mu = 0.5
+                gaussian_noise = sigma * np.random.randn(img_B.shape[0], img_B.shape[1]) + mu
+                img_B = img_B + gaussian_noise
 
             img_A = scipy.misc.imresize(img_A, self.img_res)
             img_B = scipy.misc.imresize(img_B, self.img_res)
@@ -43,18 +60,34 @@ class DataLoader():
         return imgs_A, imgs_B
 
     def load_batch(self, batch_size=1, is_testing=False, k_size=5):
-        data_type = "train" if not is_testing else "val"
-        path = glob('../data/2D/google_search_images/%s/%s/*' % (self.dataset_name, data_type))
+        # data_type = "train" if not is_testing else "val"
+        # path = glob('../data/2D/google_search_images/%s/%s/*' % (self.dataset_name, data_type))
+        path = glob('../data/2D/google_search_images/%s/*' % (self.dataset_name))
 
         self.n_batches = int(len(path) / batch_size)
+        if self.n_batches == 1:
+            print('CAUTION: n_batches = 1, data will not be loaded')
 
         for i in range(self.n_batches-1):
+
             batch = path[i*batch_size:(i+1)*batch_size]
             imgs_A, imgs_B = [], []
             for img in batch:
                 img_A = self.imread(img)
-                # img_B = cv2.GaussianBlur(img_A.copy(), (k_size,k_size), 1)
-                img_B = self.conv(img_A, radius_perc=.15)
+                img_B = deconv.conv2d(img_A, f_type='ft_low_pass', radius_perc=.07)
+
+                # # TODO: das hier muss in die deconvolution datei
+                if self.noise:
+                    # poisson noise
+                    NPhot = 100
+                    img_B = img_B.astype(float)/np.max(img_B)*NPhot
+                    img_B = np.random.poisson(img_B)
+
+                    # gaussian noise
+                    sigma = 1
+                    mu = 0.5
+                    gaussian_noise = sigma * np.random.randn(img_B.shape[0], img_B.shape[1]) + mu
+                    img_B = img_B + gaussian_noise
 
                 img_A = scipy.misc.imresize(img_A, self.img_res)
                 img_B = scipy.misc.imresize(img_B, self.img_res)
@@ -76,16 +109,17 @@ class DataLoader():
         img = scipy.misc.imread(path, mode=colormode).astype(np.float)
         return hp.tranfer_squared_image(img)
 
-    def conv(self, img, k_size=5, radius_perc=.15):
+    def conv2d(self, img, k_size=5, radius_perc=.1):
         if self.f_type == 'gaussian':
             img_r = cv2.GaussianBlur(img, (k_size,k_size), 1)
         elif self.f_type == 'ft_low_pass':
             dft = cv2.dft(np.float32(img),flags = cv2.DFT_COMPLEX_OUTPUT)
             dft_shift = np.fft.fftshift(dft)
-            
+
             rows, cols = img.shape
             crow, ccol = int(rows/2), int(cols/2)
-            r = int(rows * radius_perc)
+            # r = int(rows * radius_perc)
+            r = int(rows * radius_perc / 2)
 
             # create a mask first, center square is 1, remaining all zeros
             mask = np.zeros((rows,cols,2), np.uint8)

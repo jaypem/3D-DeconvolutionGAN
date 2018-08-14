@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 import json
@@ -30,7 +32,7 @@ def scrapeImages(searchterm, number_images=20):
         except:
             print('scrapeImages: another problem occurs: ', prefix_path+searchterm)
     else:
-        print('scrapeImages: propably the folder already exists: ', path+date)
+        print('scrapeImages: propably the folder already exists: ', prefix_path+searchterm)
 
     for _ in range(500):
         browser.execute_script("window.scrollBy(0,10000)")
@@ -51,8 +53,11 @@ def scrapeImages(searchterm, number_images=20):
             req = urllib2.Request(img, headers={'User-Agent': header})
             # raw_img = urllib2.urlopen(req).read()
             raw_img = urllib2.urlopen(url).read()
-
-            File = open(os.path.join(searchterm , searchterm + "_" + str(counter) + "." + imgtype), "wb")
+            print(os.path.join(searchterm , searchterm + "_" + str(counter) + "." + imgtype))
+            # filename = "{0}{1}/{1}_{2}.{3}".format(prefix_path, searchterm, str(counter), imgtype)
+            filename = "{0}{1}/{1}_{2}.jpg".format(prefix_path, searchterm, str(counter))
+            print(filename)
+            File = open(filename, "wb")
             File.write(raw_img)
             File.close()
             succounter = succounter + 1
