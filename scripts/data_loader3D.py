@@ -1,10 +1,10 @@
-import scipy
+# -*- coding: utf-8 -*-
+
 from glob import glob
 import numpy as np
-import matplotlib.pyplot as plt
+import enum
 from skimage import io
 from skimage.transform import resize
-import cv2
 import sys
 import tensorflow as tf
 
@@ -12,25 +12,56 @@ import helper as hp
 import deconvolution as deconv
 
 
-def print_volume_dimension(path):
+def print_volume_dimension(path, max_print=10):
     print('dimensions of volumes:')
-    for p in path:
-        vol = io.imread(p)
-        print(vol.shape)
+    for i, p in enumerate(path):
+        f = open(p, 'rb')
+
+        if i >= max_print:
+            break
+
+        # f = os.open(p, os.O_RDONLY)
+        # arr = np.frombuffer(f, dtype=np.uint8)
+        # vol = int.from_bytes(b'\x00\x10', byteorder='little')
+        # os.close( f )
+
+        try:
+            vol = io.imread(p)
+            print(i,vol.shape)
+        except:
+            print('skip file:', p)
+        f.close()
+
+
+class MANIPULATION(enum.IntEnum):
+    SPATIAL_UP = 0
+    SPATIAL_DOWN = 1
+    SPATIAL_MIN = 2
+    SPATIAL_RESIZE = 3
+    FREQUENCY_UP = 4
+    FREQUENCY_DOWN = 5
+    FREQUENCY_MIN = 6
 
 
 class DataLoader3D():
-    def __init__(self, dataset_name, vol_resize):
-        self.dataset_name = dataset_name
-        self.vol_size = vol_resize[:3]
-        # self.vol_original_size = vol_original_size
+    def __init__(self, simulation, d_name, manipulation, vol_original, vol_resize):
+        self.sim = simulation
+        self.dataset_name = d_name
+        self.vol_original = vol_original
+        self.vol_resize = vol_resize[:3]
+        self.manipulation = manipulation
+        if hp.check_for_two_potency(self.vol_original[2]):
+            self.e_v = 0
+        else:
+            self.e_v = hp.calculate_stack_manipulation(self.manipulation, self.vol_original[2], self.vol_resize[2])
+        if not self.manipulation is MANIPULATION.SPATIAL_RESIZE:
+            self.vol_resize = (self.vol_original[0], self.vol_original[1], self.vol_original[2]+self.e_v)
         path = glob('../data/3D/%s/*' % (self.dataset_name))
         self.path = [item for item in path if not item.endswith('.txt')]
-        self.vol_original_size = self.imread(np.random.choice(self.path, size=1)[0]).shape
 
         sys.path.insert(0, '../scripts/NanoImagingPack')
         from microscopy import PSF3D
-        self.otf = PSF3D(im=self.vol_size, ret_val = 'OTF')
+        self.otf = PSF3D(im=self.vol_resize, ret_val = 'OTF')
 
 
     def load_data(self, batch_size=1, add_noise=False):
@@ -40,30 +71,36 @@ class DataLoader3D():
         vols_B = []
         for vol in batch_images:
             vol_A = self.imread(vol)
-            # interpolation: default bi-linear
-            vol_A = resize(vol_A, self.vol_size)#, anti_aliasing=True)
+            vol_A = self.cut_volume(vol_A, self.vol_resize, centered=True)
+            vol_A = self.manipulate_stack(vol_A)
             vols_A.extend([vol_A])
 
+            # create conditional volume,
+            # if execution is a simulation: add noise to simulate the measurement
             vol_B = deconv.conv3d_fft(vol_A, self.otf)
-            vol_B = resize(vol_B, self.vol_size)#, anti_aliasing=True)
+            if self.sim:
+                vol_B = deconv.add_poisson(vol_B) + deconv.create_gaussian_noise(vol_B)
             vols_B.extend([vol_B])
 
             if add_noise:
-                # put noise on original and convolved image
-                poisson_A, poisson_B = deconv.add_poisson(vol_A), deconv.add_poisson(vol_B)
-                gauss_A, gauss_B = deconv.add_gaussian(vol_A), deconv.add_gaussian(vol_B)
-
                 # manipulate original image and convolve the manipulated images after that
-                flip_A = np.fliplr(vol_A)
-                roll_A = np.roll(vol_A, int(vol_A.shape[0]*.1))
-                shift_A = deconv.add_shift(vol_A)
+                flip_A = deconv.flip_vol(vol_A)
+                roll_A = deconv.roll_vol(vol_A, fraction=.1)
+                shift_A = deconv.add_affineTransformation(vol_A)
+                log_intensity_A = deconv.add_logIntensityTransformation(vol_A)
 
                 flip_B = deconv.conv3d_fft(flip_A, self.otf)
                 roll_B = deconv.conv3d_fft(roll_A, self.otf)
                 shift_B = deconv.conv3d_fft(shift_A, self.otf)
+                log_intensity_B = deconv.conv3d_fft(log_intensity_A, self.otf)
+                if self.sim:
+                    flip_B = deconv.add_poisson(flip_B) + deconv.create_gaussian_noise(flip_B)
+                    roll_B = deconv.add_poisson(roll_B) + deconv.create_gaussian_noise(roll_B)
+                    shift_B = deconv.add_poisson(shift_B) + deconv.create_gaussian_noise(shift_B)
+                    log_intensity_B = deconv.add_poisson(log_intensity_B) + deconv.create_gaussian_noise(log_intensity_B)
 
-                vols_A.extend([poisson_A, gauss_A, flip_A, roll_A, shift_A])
-                vols_B.extend([poisson_B, gauss_B, flip_B, roll_B, shift_B])
+                vols_A.extend([flip_A, roll_A, shift_A, log_intensity_A])
+                vols_B.extend([flip_B, roll_B, shift_B, log_intensity_B])
 
         vols_A = np.array(vols_A)/127.5 - 1.
         vols_B = np.array(vols_B)/127.5 - 1.
@@ -83,45 +120,116 @@ class DataLoader3D():
             vols_A, vols_B = [], []
             for vol in batch:
                 vol_A = self.imread(vol)
-
-                # TODO: hier muss das bild jetzt manipuiert werden (mit methoden von pix3pix-Methode)
-                # interpolation: default bi-linear
-                vol_A = resize(vol_A, self.vol_size)#, anti_aliasing=True)
+                # print('imread', vol_A.shape)
+                vol_A = self.cut_volume(vol_A, self.vol_resize, centered=True)
+                # print('cut_volume', vol_A.shape)
+                vol_A = self.manipulate_stack(vol_A)
+                # print('manipulate_stack', vol_A.shape)
                 vols_A.extend([vol_A])
 
+                # create conditional volume,
+                # if execution is a simulation: add noise to simulate the measurement
                 vol_B = deconv.conv3d_fft(vol_A, self.otf)
-                # TODO: hier muss das bild jetzt manipuiert werden (mit methoden von pix3pix-Methode)
-                vol_B = resize(vol_B, self.vol_size)#, anti_aliasing=True)
+                if self.sim:
+                    vol_B = deconv.add_poisson(vol_B) + deconv.create_gaussian_noise(vol_B)
                 vols_B.extend([vol_B])
 
                 if add_noise:
-                    # put noise on original and convolved image
-                    poisson_A, poisson_B = deconv.add_poisson(vol_A), deconv.add_poisson(vol_B)
-                    gauss_A, gauss_B = vol_A + deconv.create_gaussian_noise(vol_A), vol_B + deconv.create_gaussian_noise(vol_B)
-
                     # manipulate original image and convolve the manipulated images after that
-                    flip_A = np.fliplr(vol_A)
-                    roll_A = np.roll(vol_A, int(vol_A.shape[0]*.1))
-                    shift_A = deconv.add_shift(vol_A)
+                    flip_A = deconv.flip_vol(vol_A)
+                    roll_A = deconv.roll_vol(vol_A, fraction=.1)
+                    shift_A = deconv.add_affineTransformation(vol_A)
+                    log_intensity_A = deconv.add_logIntensityTransformation(vol_A)
 
                     flip_B = deconv.conv3d_fft(flip_A, self.otf)
                     roll_B = deconv.conv3d_fft(roll_A, self.otf)
                     shift_B = deconv.conv3d_fft(shift_A, self.otf)
+                    log_intensity_B = deconv.conv3d_fft(log_intensity_A, self.otf)
+                    # https://arxiv.org/pdf/1711.04340.pdf Introduction
+                    # random translations,rotations and flips as well as addition of Gaussian noise
+                    if self.sim:
+                        flip_B = deconv.add_poisson(flip_B) + deconv.create_gaussian_noise(flip_B)
+                        roll_B = deconv.add_poisson(roll_B) + deconv.create_gaussian_noise(roll_B)
+                        shift_B = deconv.add_poisson(shift_B) + deconv.create_gaussian_noise(shift_B)
+                        log_intensity_B = deconv.add_poisson(log_intensity_B) + deconv.create_gaussian_noise(log_intensity_B)
 
-                    vols_A.extend([poisson_A, gauss_A, flip_A, roll_A, shift_A])
-                    vols_B.extend([poisson_B, gauss_B, flip_B, roll_B, shift_B])
+                    vols_A.extend([flip_A, roll_A, shift_A, log_intensity_A])
+                    vols_B.extend([flip_B, roll_B, shift_B, log_intensity_B])
 
             vols_A = np.array(vols_A)/127.5 - 1.
             vols_B = np.array(vols_B)/127.5 - 1.
-            
+
             yield vols_A, vols_B
+
+# ****************************************************************************
+# *                              Volume operations                           *
+# ****************************************************************************
 
     def imread(self, path, colormode='L'):
         vol = io.imread(path)
         return hp.swapAxes(vol, swap=True)
 
+    def cut_volume(self, vol, resize, centered=True):
+        rows, cols = vol.shape[:2]
+        r, c = resize[:2]
+        r2, c2 = int(r/2), int(c/2)
 
-### TFRecords functions ###
+        if centered:
+            crow, ccol = int(rows/2), int(cols/2)
+        else:
+            crow = np.random.randint(low=r2, high=rows-r2, size=1)[0]
+            ccol = np.random.randint(low=c2, high=cols-c2, size=1)[0]
+
+        try:
+            return vol[(crow-r2):(crow+r2), (ccol-c2):(ccol+c2), :]
+        except:
+            print('ERROR by method: DataLoader3D.cut_volume, resize volume')
+            return resize(vol_A, self.vol_size)
+
+    def manipulate_stack(self, vol, pad_mode='linear_ramp'):
+        pad = ((0,0), (0,0), hp.calculate_pad_crop_value(self.e_v))
+        if self.manipulation == MANIPULATION.SPATIAL_UP:
+            return np.pad(vol, pad_width=pad, mode=pad_mode)
+        elif self.manipulation == MANIPULATION.SPATIAL_DOWN:
+            return vol[:,:,:self.vol_resize[2]]
+        elif self.manipulation == MANIPULATION.SPATIAL_MIN:
+            x = hp.calculate_stack_resize(self.vol_original[2], 'min')[0]
+            if 2**x < self.vol_original[2]:
+                return vol[:,:,:self.vol_resize[2]]
+            else:
+                return np.pad(vol, pad_width=pad, mode=pad_mode)
+        elif self.manipulation == MANIPULATION.SPATIAL_RESIZE:
+            # interpolation: default bi-linear
+            return resize(vol, self.vol_resize)#, anti_aliasing=True)
+        elif self.manipulation == MANIPULATION.FREQUENCY_UP:
+            vol_fft = np.fft.fftn(vol)
+            vol_fftshift = np.fft.fftshift(vol_fft)
+            vol_fftshift = np.pad(vol_fftshift, pad_width=pad, mode='constant')
+            vol_fftshift = np.fft.ifftshift(vol_fftshift)
+            vol_fft = np.fft.ifftn(vol_fftshift)
+            return np.real(vol_fft*np.conj(vol_fft))
+        elif self.manipulation == MANIPULATION.FREQUENCY_DOWN:
+            vol_fft = np.fft.fftn(vol)
+            vol_fftshift = np.fft.fftshift(vol_fft)
+            vol_fftshift = vol_fftshift[:,:,:self.vol_resize[2]]
+            vol_fftshift = np.fft.ifftshift(vol_fftshift)
+            vol_fft = np.fft.ifftn(vol_fftshift)
+            return np.real(vol_fft*np.conj(vol_fft))
+        elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
+            x = hp.calculate_stack_resize(self.vol_original[2], 'constant')[0]
+            vol_fft = np.fft.fftn(vol)
+            vol_fftshift = np.fft.fftshift(vol_fft)
+            if 2**x < self.vol_original[2]:
+                vol_fftshift = vol_fftshift[:,:,:self.vol_resize[2]]
+            else:
+                vol_fftshift = np.pad(vol_fftshift, pad_width=pad, mode='edge')
+            vol_fftshift = np.fft.ifftshift(vol_fftshift)
+            vol_fft = np.fft.ifftn(vol_fftshift)
+            return np.real(vol_fft*np.conj(vol_fft))
+
+# ****************************************************************************
+# *                             TFRecords functions                          *
+# ****************************************************************************
 
     def _int64_feature(self, value):
         return tf.train.Feature(int64_list=tf.train.Int64List(value=[value]))
