@@ -50,9 +50,7 @@ class Pix2Pix():
 
         # Build and compile the discriminator
         self.discriminator = self.build_discriminator()
-        self.discriminator.compile(loss='mse',
-            optimizer=optimizer,
-            metrics=['accuracy'])
+        self.discriminator.compile(loss='mse', optimizer=optimizer, metrics=['accuracy'])
 
         #-------------------------
         # Construct Computational
@@ -135,7 +133,7 @@ class Pix2Pix():
         u7 = UpSampling2D(size=2)(u6)
         output_img = Conv2D(self.channels, kernel_size=4, strides=1, padding='same', activation='tanh')(u7)
 
-        return Model(d0, output_img)
+        return Model(d0, output_img, name='generator')
 
     def build_discriminator(self):
 
@@ -160,7 +158,7 @@ class Pix2Pix():
 
         validity = Conv2D(1, kernel_size=4, strides=1, padding='same')(d4)
 
-        return Model([img_A, img_B], validity)
+        return Model([img_A, img_B], validity, name='discriminator')
 
     def train(self, epochs, batch_size=1, sample_interval=50):
         start_time = datetime.datetime.now()
