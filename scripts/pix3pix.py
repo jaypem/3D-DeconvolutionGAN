@@ -7,7 +7,10 @@ import numpy as np
 import time
 import datetime
 import os
+import json
+import csv
 import matplotlib.pyplot as plt
+import tifffile as tiff
 import tensorflow as tf
 
 from keras.layers import Input, Concatenate, BatchNormalization, Dropout, Flatten
@@ -23,39 +26,61 @@ import helper as hp
 
 
 class Pix3Pix():
-    def __init__(self, vol_original, vol_resize, d_name, stack_manipulation, simulation, ganhacks):
-        self.ganhacks = ganhacks
+    def req_key(self, key):
+        return list(self.settings[key].keys())[0]
+
+    def __init__(self, vol_original, stack_manipulation):
+        # Import settings
+        with open('{}/config.json'.format(os.path.dirname(__file__))) as json_data:
+            self.settings = json.load(json_data)['selected']
+
+        vol_resize = ( self.settings['RESIZE']['width'],
+                       self.settings['RESIZE']['height'],
+                       self.settings['RESIZE']['depth'] )
+
         # Configure data loader
-        self.dataset_name = d_name
-        self.data_loader = DataLoader3D(simulation=simulation,
-                                        d_name=self.dataset_name,
+        self.dataset_name = self.settings['DATASET_NAME']
+        self.data_loader = DataLoader3D(micro_noise=self.settings['ADD_MICRO_NOISE'],
+                                        d_name=self.settings['DATASET_NAME'],
                                         manipulation=stack_manipulation,
                                         vol_original=vol_original,
-                                        vol_resize=vol_resize)
+                                        vol_resize=vol_resize,
+                                        norm=self.settings["PSF_OTF_NORM"])
 
         # Input shape
         self.channels = 1
         self.vol_shape = self.data_loader.vol_resize+(self.channels,)
-        self.vol_rows = self.vol_shape[0]
+        self.vol_rows = self.settings['RESIZE']['width']
+        self.vol_cols = self.settings['RESIZE']['height']
         self.vol_depth = self.vol_shape[2]
 
-        print('mögliche Fehlerquelle bei Berechnung von patch_depth -> self.disc_patch : ...2**3))#4))')
         # Calculate output shape of D (PatchGAN)
-        patch = int(self.vol_rows / 2**3) #4)
-        patch_depth = int(np.ceil(self.vol_depth / 2**3))#4))
+        if self.settings['NETWORK_DEPTH'] == 'HIGH':
+            network__depth_factor = 4
+        elif self.settings['NETWORK_DEPTH'] == 'MEDIUM':
+            network__depth_factor = 3
+        elif self.settings['NETWORK_DEPTH'] == 'LOW':
+            network__depth_factor = 2
+        patch = int(self.vol_rows / 2**network__depth_factor)
+        patch_depth = int(np.ceil(self.vol_depth / 2**network__depth_factor))
         self.disc_patch = (patch, patch, patch_depth, 1)
-        # self.disc_patch = (patch*patch*patch_depth,)
 
         # Number of filters in the first layer of G and D
         self.gf = 64
         self.df = 64
 
+        # GANHACKS: train with improve-techniques for GANs
+        self.ganhacks = self.settings['GANHACKS']
+        if self.ganhacks:
+            self.true_label = self.settings['ONE-SIDED-LABEL']
+            # alternative: = np.around(np.random.uniform(low=.7, high=1.2, decimals=1)
+
         loss = losses.kullback_leibler_divergence
-        optimizer = optimizers.Adam(0.0002, 0.5)
+        adam = optimizers.Adam(0.0001, 0.5)
 
         # Build and compile the discriminator
         self.discriminator = self.build_discriminator()
-        self.discriminator.compile(loss='mse', optimizer=optimizer, metrics=['accuracy'])
+        self.discriminator.compile(loss='mse', optimizer=adam, metrics=['accuracy'])
 
         #-------------------------
         # Construct Computational
@@ -79,91 +104,94 @@ class Pix3Pix():
         valid = self.discriminator([fake_A, vol_B])
 
         # TODO: # ACHTUNG:
-        # If the model has multiple outputs, you can use a different loss on each output
-        # by passing a dictionary or a list of losses.
-        # The loss value that will be minimized by the model will then be the sum of all individual losses.
+        # If the model has multiple outputs, you can use a different loss on each output by passing a dictionary or a list of losses.
+        # loss value that will be minimized by the model will be the sum of all individual losses
         self.combined = Model(inputs=[vol_A, vol_B], outputs=[valid, fake_A], name='combined')
-        self.combined.compile(loss=['mse', 'mae'], loss_weights=[1, 100], optimizer=optimizer)
-        # self.combined.compile(loss=[loss, 'mae'], loss_weights=[1, 100], optimizer=optimizer)
+        # self.combined.compile(loss=['mse', 'mae'], loss_weights=[1, 100], optimizer=adam)
+        self.combined.compile(loss=['kullback_leibler_divergence', 'mae'], loss_weights=[0, 10], optimizer=adam)
 
         # Save the model weights after each epoch if the validation loss decreased
         p = time.strftime("%Y-%m-%d_%H_%M_%S")
-        # self.checkpointer = ModelCheckpoint(filepath="logs/{}_CP".format(p), verbose=1,
-                                            # save_best_only=True, mode='min')
+        if self.settings['SAVE_LOGS']:
+            self.checkpointer = ModelCheckpoint(filepath="logs/{}_CP".format(p), verbose=1,
+                                                save_best_only=True, mode='min')
 
-        # self.tensorboard = TensorBoard(log_dir="logs/{}".format(p), histogram_freq=0, batch_size=1,
-        #     write_graph=False, write_grads=True, write_images=False, embeddings_freq=0,
-        #     embeddings_layer_names=None, embeddings_metadata=None)
-        # self.tensorboard.set_model(self.combined)
+            self.tensorboard = TensorBoard(log_dir="logs/{}".format(p), histogram_freq=0, batch_size=1,
+                write_graph=True, write_grads=True, write_images=False, embeddings_freq=0,
+                embeddings_layer_names=None, embeddings_metadata=None)
+            self.tensorboard.set_model(self.combined)
 
         print('finish Pix3Pix __init__')
 
 
     def build_generator(self):
         """U-Net Generator"""
-        self.stack_downsamling = []
 
-        def conv3d(layer_input, filters, f_size=4, bn=True):
+        # TODO: mit filer size 3 filtern und testen
+        # def conv3d(layer_input, filters, f_size=3, bn=True, dropout_prob=0.4)
+        def conv3d(layer_input, filters, f_size=4, bn=True, dropout_prob=0.4):
             """Layers used during downsampling"""
-
-            # # TODO: einziger Weg wie man vor dem conv. das padding selbst bestimmen kann
-            # padded_input = tf.pad(input, [[0, 0], [2, 2], [1, 1], [0, 0]], "CONSTANT")
-            # output = tf.nn.conv2d(padded_input, filter, strides=[1, 1, 1, 1], padding="VALID")
-
             d = Conv3D(filters, kernel_size=f_size, strides=2, padding='same')(layer_input)
             d = LeakyReLU(alpha=0.2)(d)
+            # GANHACKS: add dropout with 'dropout_prob'%
+            if self.ganhacks and (np.random.rand() < dropout_prob):
+                d = Dropout(rate=self.settings['DROPOUT'])(d)
             if bn:
                 d = BatchNormalization(momentum=0.8)(d)
 
-            self.stack_downsamling.append(int(d.shape[3]))
             print('downsampling:\t\t\t', d.shape)
             return d
 
-        def deconv3d(layer_input, skip_input, filters, cnt, f_size=4, dropout_rate=0):
+        def deconv3d(layer_input, skip_input, filters, f_size=4, dropout_prob=0.4):
             """Layers used during upsampling"""
-            # TODO: ist das hier genug nur auf den vorletzten zu überprüfen?? generisch schreiben?
-            if self.stack_downsamling[cnt-1] == 1:
+            if skip_input.shape[3] == 1:
                 u = UpSampling3D(size=(2, 2, 1), data_format="channels_last")(layer_input)
             else:
                 u = UpSampling3D(size=(2, 2, 2), data_format="channels_last")(layer_input)
 
             u = Conv3D(filters, kernel_size=f_size, strides=1, padding='same', activation='relu')(u)
-            if dropout_rate:
-                u = Dropout(dropout_rate)(u)
+            # GANHACKS: add dropout with 'dropout_prob'%
+            if self.ganhacks and (np.random.rand() < dropout_prob):
+                u = Dropout(rate=self.settings['DROPOUT'])(u)
             u = BatchNormalization(momentum=0.8)(u)
 
-            # TODO: hier stimmt die Ausgabe nicht, von data_loader-objekt holen
             print('upsampling:\t\t\t', u.shape)
             u = Concatenate()([u, skip_input])
             return u
 
-        # Image input (distinguish for two potency stack number)
         d0 = Input(shape=self.vol_shape)
         print('generator-model input:\t\t', d0.shape)
-        self.stack_downsamling.append(int(d0.shape[3])); c = 0
 
         # Downsampling
-        d1 = conv3d(d0, self.gf, bn=False); c += 1
-        d2 = conv3d(d1, self.gf*2); c += 1
-        d3 = conv3d(d2, self.gf*4); c += 1
-        d4 = conv3d(d3, self.gf*8); c += 1
-        d5 = conv3d(d4, self.gf*8); c += 1
-        # d6 = conv3d(d5, self.gf*8); c += 1
-        # d7 = conv3d(d6, self.gf*8); c += 1
+        d1 = conv3d(d0, self.gf, bn=False)
+        d2 = conv3d(d1, self.gf*2)
+        d3 = conv3d(d2, self.gf*4)
+        d4 = conv3d(d3, self.gf*8)
+        if self.settings['NETWORK_DEPTH'] == 'MEDIUM':
+            d5 = conv3d(d4, self.gf*8)
+        elif self.settings['NETWORK_DEPTH'] == 'HIGH':
+            d5 = conv3d(d4, self.gf*8)
+            d6 = conv3d(d5, self.gf*8)
+            d7 = conv3d(d6, self.gf*8)
 
         # Upsampling
-        # u1 = deconv3d(d7, d6, self.gf*8, cnt=c); c -= 1
-        # u2 = deconv3d(u1, d5, self.gf*8, cnt=c); c -= 1
-        # u3 = deconv3d(u2, d4, self.gf*8, cnt=c); c -= 1
-        u3 = deconv3d(d5, d4, self.gf*8, cnt=c); c -= 1
-        u4 = deconv3d(u3, d3, self.gf*4, cnt=c); c -= 1
-        u5 = deconv3d(u4, d2, self.gf*2, cnt=c); c -= 1
-        u6 = deconv3d(u5, d1, self.gf, cnt=c); c -= 1
+        if self.settings['NETWORK_DEPTH'] == 'HIGH':
+            u1 = deconv3d(d7, d6, self.gf*8)
+            u2 = deconv3d(u1, d5, self.gf*8)
+            u3 = deconv3d(u2, d4, self.gf*8)
+            u4 = deconv3d(u3, d3, self.gf*4)
+        elif self.settings['NETWORK_DEPTH'] == 'MEDIUM':
+            u3 = deconv3d(d5, d4, self.gf*8)
+            u4 = deconv3d(u3, d3, self.gf*4)
+        elif self.settings['NETWORK_DEPTH'] == 'LOW':
+            u4 = deconv3d(d4, d3, self.gf*4)
+        u5 = deconv3d(u4, d2, self.gf*2)
+        u6 = deconv3d(u5, d1, self.gf)
 
         u7 = UpSampling3D(size=2, data_format="channels_last")(u6)
         output_vol = Conv3D(self.channels, kernel_size=4, strides=1, padding='same', activation='tanh')(u7)
 
-        print('generator-model output:\t\t', d0.shape, output_vol.shape)
+        print('generator-model output:\t\t', output_vol.shape)
         return Model(d0, output_vol, name='generator')
 
     def build_discriminator(self):
@@ -176,7 +204,6 @@ class Pix3Pix():
                 d = BatchNormalization(momentum=0.8)(d)
             return d
 
-        # Image input (distinguish for two potency stack number)
         vol_A = Input(shape=self.vol_shape)
         vol_B = Input(shape=self.vol_shape)
 
@@ -186,19 +213,24 @@ class Pix3Pix():
         d1 = d_layer(combined_vols, self.df, bn=False)
         d2 = d_layer(d1, self.df*2)
         d3 = d_layer(d2, self.df*4)
-        # d4 = d_layer(d3, self.df*8)
+        d4 = d_layer(d3, self.df*8)
 
-        validity = Conv3D(1, kernel_size=4, strides=1, padding='same')(d3) #(d4)
-        # validity = Flatten(data_format="channels_last")(validity)
+        if self.settings['NETWORK_DEPTH'] == 'LOW':
+            validity = Conv3D(1, kernel_size=4, strides=1, padding='same')(d2)
+        elif self.settings['NETWORK_DEPTH'] == 'MEDIUM':
+            validity = Conv3D(1, kernel_size=4, strides=1, padding='same')(d3)
+        elif self.settings['NETWORK_DEPTH'] == 'HIGH':
+            validity = Conv3D(1, kernel_size=4, strides=1, padding='same')(d4)
+
         print('discriminator-model in/output:\t', vol_A.shape, vol_B.shape, '\n\t\t\t\t', validity.shape)
         return Model([vol_A, vol_B], validity, name='discriminator')
 
-    def train(self, epochs, batch_size=1, sample_interval=50, add_noise=False):
+    def train(self, epochs, batch_size=1, sample_interval=50):
         p = time.strftime("%Y-%m-%d_%H_%M_%S")
         start_time = datetime.datetime.now()
 
         # Adversarial loss ground truths (6 = 1 original volume + 5 noise volumes)
-        if add_noise:
+        if (0): #self.ganhacks:
             valid = np.ones((5*batch_size,) + self.disc_patch)
             fake = np.zeros((5*batch_size,) + self.disc_patch)
         else:
@@ -206,15 +238,19 @@ class Pix3Pix():
             fake = np.zeros((batch_size,) + self.disc_patch)
 
         if self.ganhacks:
-            fake_label = np.around(np.random.uniform(low=0.0, high=0.3), decimals=1)
-            fake = fake + fake_label
-            true_label = np.around(np.random.uniform(low=0.7, high=1.2), decimals=1)
-            valid = valid * true_label
+            # GANHACKS: one-sided label smooting
+            valid = valid * self.true_label
+            # GANHACKS: flip labels of discriminator randomly
+            if np.random.rand() < self.settings['FLIP_LABEL_PROB']:
+                valid, fake = fake, valid
 
         for epoch in range(epochs):
-            for batch_i, (vols_A, vols_B) in enumerate(self.data_loader.load_batch(batch_size, add_noise)):
+            for batch_i, (vols_A, vols_B) in enumerate(self.data_loader.load_batch(batch_size, self.settings['ADD_MICRO_NOISE'])):
                 # expand channel dimension/reshape images
                 vols_A, vols_B = np.expand_dims(vols_A, axis=4), np.expand_dims(vols_B, axis=4)
+
+
+                # return 0
 
                 # ---------------------
                 #  Train Discriminator
@@ -225,7 +261,7 @@ class Pix3Pix():
 
                 # Condition on B and generate a translated version
                 fake_A = self.generator.predict(vols_B)
-                # print('train-shapes:',vols_A.shape, vols_B.shape, valid.shape, self.disc_patch)
+
                 # Train the discriminators (original images = real / generated = Fake)
                 d_loss_real = self.discriminator.train_on_batch([vols_A, vols_B], valid)
                 d_loss_fake = self.discriminator.train_on_batch([fake_A, vols_B], fake)
@@ -235,31 +271,44 @@ class Pix3Pix():
                 #  Train Generator
                 # -----------------
 
-                # Fit the model
+                 # Train the generators
                 g_loss = self.combined.train_on_batch([vols_A, vols_B], [valid, vols_A])
 
                 elapsed_time = datetime.datetime.now() - start_time
                 # Plot the progress
-                print ("[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %3d%%] [G loss: %f] time: %s" % (epoch, epochs-1,
-                                                                    batch_i, self.data_loader.n_batches-1, d_loss[0],
-                                                                    100*d_loss[1], g_loss[0], elapsed_time))
-                # self.write_log(g_loss, batch_i)
+                loss_msg = "[Epoch %d/%d] [Batch %d/%d] [D loss: %f, acc: %3d%%] [G loss: %f] time: %s" % (epoch, epochs-1,
+                                batch_i, self.data_loader.n_batches-1, d_loss[0], 100*d_loss[1], g_loss[0], elapsed_time)
+                print (loss_msg)
+
+                if self.settings['SAVE_LOSS']:
+                    self.save_loss(loss_msg, p)
+
+                if self.settings['SAVE_LOGS']:
+                    self.save_log(g_loss, batch_i)
 
                 # If at save interval => save generated image samples
                 if batch_i % sample_interval == 0:
-                    self.sample_images(epoch, batch_i, p)
+                    if self.settings['SAVE_TABLE_IMAGES']:
+                        self.save_table_images(epoch, batch_i, p)
+                    if self.settings['SAVE_VOLUME']:
+                        self.save_volume(epoch, batch_i, p)
 
         time_elapsed = datetime.datetime.now() - start_time
+
+        # If specified => save GAN config file as json
+        if self.settings['SAVE_CONFIG']:
+            self.save_config(p)
+
         print('\nFinish training in (hh:mm:ss.ms) {}'.format(time_elapsed))
 
-    def sample_images(self, epoch, batch_i, p):
-        os.makedirs('images/{0}/{0}_{1}_{2}'.format(self.dataset_name, p, self.data_loader.manipulation.name), exist_ok=True)
+    def save_table_images(self, epoch, batch_i, p):
+        directory = 'images/{0}/{0}_{1}'.format(self.dataset_name, p)
+        os.makedirs(directory, exist_ok=True)
         r, c = 3, 3
 
         imgs_A, imgs_B = self.data_loader.load_data(batch_size=1)
         imgs_A, imgs_B = np.expand_dims(imgs_A, axis=4), np.expand_dims(imgs_B, axis=4)
 
-        # TODO: methode schreiben, die nur "fake_A", "imgs_A" und "imgs_B" speichert
         fake_A = self.generator.predict(imgs_B)
 
         gen_imgs = np.concatenate([imgs_A, imgs_B, fake_A])
@@ -286,10 +335,25 @@ class Pix3Pix():
 
         fig.tight_layout()
         plt.subplots_adjust(left=0.02, wspace=0, top=0.92)
-        fig.savefig('images/{0}/{0}_{1}_{4}/{2}_{3}_{4}.png'.format(self.dataset_name, p, epoch, batch_i, self.data_loader.manipulation.name))
+        fig.savefig('{0}/{1}_{2}.png'.format(directory, epoch, batch_i))
         plt.close()
 
-    def write_log(self, logs, batch_no):
+    def save_volume(self, epoch, batch_i, p):
+        directory = 'images/{0}/{0}_{1}_VOLUMES'.format(self.dataset_name, p)
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+
+        vol_A, vol_B = self.data_loader.load_data(batch_size=1)
+        vol_A, vol_B = np.expand_dims(vol_A, axis=4), np.expand_dims(vol_B, axis=4)
+        fake_A = self.generator.predict(vol_B)
+        vol_A, vol_B, fake_A = vol_A[0,:,:,:,0], vol_B[0,:,:,:,0], fake_A[0,:,:,:,0]
+        vol_A, vol_B, fake_A = vol_A.astype(np.uint8), vol_B.astype(np.uint8), fake_A.astype(np.uint8)
+
+        tiff.imsave('{0}/{1}_{2}_Original.tif'.format(directory, epoch, batch_i), vol_A)
+        tiff.imsave('{0}/{1}_{2}_OTF.tif'.format(directory, epoch, batch_i), vol_B)
+        tiff.imsave('{0}/{1}_{2}_Generated.tif'.format(directory, epoch, batch_i), fake_A)
+
+    def save_log(self, logs, batch_no):
         names = ['train_loss', 'discriminator_loss', 'generator_loss']
         for name, value in zip(names, logs):
             summary = tf.Summary()
@@ -299,6 +363,28 @@ class Pix3Pix():
             self.tensorboard.writer.add_summary(summary, batch_no)
             self.tensorboard.writer.flush()
 
+    def save_config(self, p):
+        directory = 'images/{0}/{0}_{1}'.format(self.dataset_name, p)
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        file = '{0}/{1}_{2}.json'.format(directory, self.dataset_name, p)
+        with open(file, 'w') as outfile:
+            json.dump(self.settings, outfile)
+
+    def save_loss(self, msg, p):
+        directory = 'images/{0}/{0}_{1}_{2}'.format(self.dataset_name,
+            p, self.data_loader.manipulation.name)
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+        file = '{0}/{1}_{2}.csv'.format(directory, self.dataset_name, p)
+
+        arr = msg.replace('[', '').replace(']', '').replace('%', '').replace('/', ' ')
+        arr = np.array(arr.split(' ')).take(indices=[1, 2, 4, 5, 8, 11, 14, 16])
+
+        # hd = ['Epoch val', 'Epoch of', 'Batch val', 'Batch of', 'D_loss', 'acc', 'G_loss', 'time']
+        with open(file,'a') as f1:
+            writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
+            writer.writerow(arr)
 
     def resize_stack(self, inputlayer, upsample):
         '''

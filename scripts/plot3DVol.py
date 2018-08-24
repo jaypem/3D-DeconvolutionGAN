@@ -3,6 +3,51 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from plotly.offline import plot
+import tifffile as tiff 
+from glob import glob
+
+import helper as hp
+
+
+def plot3D_GAN_Volumes(dataset_name):
+    result_path = '../notebooks/images/{0}/*'.format(dataset_name) 
+    model_vols = glob(result_path)
+    model_vols = [item for item in model_vols if "_VOLUMES" in item]
+    selected_folder = model_vols[-1]+'/*'
+    
+    volumes = glob(selected_folder)[-3:]
+    #f = plt.figure(figsize=(20,15))
+    #fig, (ax1, ax2, ax3) = plt.subplots(1, 3)
+    for idx,volume_path in enumerate(volumes):       
+        vol = tiff.imread(volume_path)
+        tiff.imshow(vol, title=volume_path.split('\\')[-1])
+        hp.print_volume_statistics(vol)
+               
+
+def cell_generator(size, dim_prob=(0.5, 0.6, 0.4)):
+    # determine initial position
+    init_x = np.random.randint(low=0, high=size[0],size=1)[0]
+    init_y = np.random.randint(low=0, high=size[1],size=1)[0]
+    init_z = np.random.randint(low=0, high=size[2],size=1)[0]
+    print(init_x, init_y, init_z)
+
+    # create and fill cell-array
+    cell = np.zeros((size))
+    for i in range(size[0]):
+        for j in range(size[1]):
+            for k in range(size[2]):
+                # calculate contour depend on dimenison probalitites
+                x_val = 1 if np.random.rand() < dim_prob[0] else 0
+                y_val = 1 if np.random.rand() < dim_prob[1] else 0
+                z_val = 1 if np.random.rand() < dim_prob[2] else 0
+
+                if np.sum([x_val, y_val, z_val]) == 3:
+                    # fill cell at position i,j,k
+                    # cell[i,j,k] = ...
+                    pass
+
+
+    return cell
 
 class Interactive_3DVolume():
     def __init__(self, vol):
@@ -104,13 +149,13 @@ class CellVolume():
     def decision(self, probability=0.1):
         return np.random.random() < probability
 
-    # def drawBall(self, idx, diameter=5):
-    #     val_x, val_y, val_z = self.x[idx], self.y[idx], self.z[idx]
-    #     u = np.linspace(0, 2 * np.pi, diameter)
-    #     v = np.linspace(0, np.pi, diameter)
-    #     x = diameter * np.outer(np.cos(u),np.sin(v)) + val_x
-    #     y = diameter * np.outer(np.sin(u), np.sin(v)) + val_y
-    #     z = diameter * np.outer(np.ones(np.size(u)), np.cos(v)) + val_z
+    def drawBall(self, idx, diameter=5):
+        val_x, val_y, val_z = self.x[idx], self.y[idx], self.z[idx]
+        u = np.linspace(0, 2 * np.pi, diameter)
+        v = np.linspace(0, np.pi, diameter)
+        x = diameter * np.outer(np.cos(u),np.sin(v)) + val_x
+        y = diameter * np.outer(np.sin(u), np.sin(v)) + val_y
+        z = diameter * np.outer(np.ones(np.size(u)), np.cos(v)) + val_z
 
 
     def plot3Dgraph(self, fig, x, y, z):

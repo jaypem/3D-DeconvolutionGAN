@@ -59,7 +59,8 @@ class DataLoader():
 
         return imgs_A, imgs_B
 
-    def load_batch(self, batch_size=1, is_testing=False, k_size=5):
+    def load_batch(self, batch_size=1, is_testing=False, add_noise=False):
+        # # TODO: hier muss noch einiges gefixt werden, sollte das wichtig sein...
         # data_type = "train" if not is_testing else "val"
         # path = glob('../data/2D/google_search_images/%s/%s/*' % (self.dataset_name, data_type))
         path = glob('../data/2D/google_search_images/%s/*' % (self.dataset_name))
@@ -76,18 +77,16 @@ class DataLoader():
                 img_A = self.imread(img)
                 img_B = deconv.conv2d(img_A, f_type='ft_low_pass', radius_perc=.07)
 
-                # # TODO: das hier muss in die deconvolution datei
-                if self.noise:
-                    # poisson noise
-                    NPhot = 100
-                    img_B = img_B.astype(float)/np.max(img_B)*NPhot
-                    img_B = np.random.poisson(img_B)
+                if add_noise:
+                    flip_A = deconv.flip_vol(img_A)
+                    roll_A = deconv.roll_vol(img_A, fraction=.1)
+                    shift_A = deconv.add_affineTransformation(img_A)
+                    log_intensity_A = deconv.add_logIntensityTransformation(img_A)
 
-                    # gaussian noise
-                    sigma = 1
-                    mu = 0.5
-                    gaussian_noise = sigma * np.random.randn(img_B.shape[0], img_B.shape[1]) + mu
-                    img_B = img_B + gaussian_noise
+                    flip_B = deconv.conv3d_fft(flip_A, self.otf)
+                    roll_B = deconv.conv3d_fft(roll_A, self.otf)
+                    shift_B = deconv.conv3d_fft(shift_A, self.otf)
+                    log_intensity_B = deconv.conv3d_fft(log_intensity_A, self.otf)
 
                 img_A = scipy.misc.imresize(img_A, self.img_res)
                 img_B = scipy.misc.imresize(img_B, self.img_res)

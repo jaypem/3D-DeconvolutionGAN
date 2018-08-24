@@ -188,7 +188,7 @@ class Pix2Pix():
                 #  Train Generator
                 # -----------------
 
-                # Fit the model
+                 # Train the generators
                 g_loss = self.combined.fit([imgs_A, imgs_B], [valid, imgs_A],
                                             validation_split=0.1,
                                             verbose=0,

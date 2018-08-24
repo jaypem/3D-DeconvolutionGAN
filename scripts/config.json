@@ -1,0 +1,51 @@
+{
+	"selection_options": {
+		"NETWORK_DEPTH": ["LOW", "MEDIUM", "HIGH"],
+		"PSF_OTF_NORM": ["PSF", "OTF"],
+		"ADD_MICRO_NOISE": [true, false],
+		"GANHACKS":  [true, false],
+		"INPUT_NOISE_D": [true, false],
+		"ADD_GAUSS_NOISE_G": [true, false],
+		"SAVE_TABLE_IMAGES": [true, false],
+		"SAVE_VOLUME": [true, false],
+		"SAVE_LOGS": [true, false],
+		"SAVE_CONFIG": [true, false],
+		"SAVE_LOSS": [true, false],
+		"MANIPULATION_STACKS": ["NONE", "SPATIAL_UP", "SPATIAL_DOWN", "SPATIAL_MIN", "SPATIAL_RESIZE", "FREQUENCY_UP", "FREQUENCY_DOWN", "FREQUENCY_MIN"],
+		"OPTIMIZER": ["sgd", "adam", "adamdelta"],
+		"LOSS": ["mean_squared_error", "mean_absolute_error", "kullback_leibler_divergence", "categorical_crossentropy"],
+		"DROPOUT": [0.0, 0.5],
+		"ONE-SIDED-LABEL": [0.7, 1.2]
+	},
+	"selected": {
+		"NETWORK_DEPTH": "MEDIUM",
+		"PSF_OTF_NORM": "OTF",
+		"ADD_MICRO_NOISE": true,
+		"GANHACKS":  true,
+		"INPUT_NOISE_D": false,
+		"ADD_GAUSS_NOISE_G": false,
+		"SAVE_TABLE_IMAGES": true,
+		"SAVE_VOLUME": true,
+		"SAVE_LOGS": false,
+		"SAVE_CONFIG": true,
+		"SAVE_LOSS": false,
+		"MANIPULATION_STACKS": "NONE",
+		"OPTIMIZER": {
+			"discriminator": "adam",
+			"combined": "adam"
+		},
+		"LOSS": {
+			"discriminator": "mean_squared_error",
+			"combined": ["mean_squared_error", "mean_absolute_error"]
+		},
+		"DROPOUT": 0.25,
+		"ONE-SIDED-LABEL": 0.7,
+		"FLIP_LABEL_PROB": 0.4,
+		"RESIZE": {
+			"width": 64,
+			"height": 64,
+			"depth": 64
+		},
+		"DATASET_NAME": "VascuSynth"
+	}
+}

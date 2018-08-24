@@ -10,6 +10,9 @@ import sys
 import os
 
 import helper as hp
+# TODO: hier relativ den Pfad einbauen von "deconvolution"
+sys.path.insert(0, '../scripts/NanoImagingPack')
+from transformations import *
 
 def conv2d(img, f_type, radius_perc, k_size=5, show_mask=False):
     import cv2
@@ -49,14 +52,22 @@ def abssqr_tf(vol):
     return tf.real(vol*tf.conj(vol))
 
 def conv3d_fft(vol, otf):
-    vol_fft = np.fft.fftn(vol)
-    vol_fftshift = np.fft.fftshift(vol_fft)
+    vol_fft = ft(im=vol, shift=True, norm=None, force_full_fft=True)
 
-    vol_fftshift = np.multiply(vol_fftshift, otf)
+    # vol_conv =  np.multiply(vol_fft, otf)
+    # vol_ifft = ift(im=vol_conv, shift=False, norm=None)
+    # return abssqr(vol_ifft)
+    return ift(vol_fft*otf, shift=True, norm=None, ret='abs')
 
-    vol_fftshift = np.fft.ifftshift(vol_fftshift)
-    vol_fft = np.fft.ifftn(vol_fftshift)
-    return abssqr(vol_fft)
+# def conv3d_fft(vol, otf):
+#     vol_fft = np.fft.fftn(vol, norm=None)
+#     # vol_fft = np.fft.fftshift(vol_fft)
+#
+#     vol_fft = np.multiply(vol_fft, otf)
+#
+#     # vol_fft = np.fft.ifftshift(vol_fft)
+#     vol_fft = np.fft.ifftn(vol_fft, norm=None)
+#     return abssqr(vol_fft)
 
 def conv3d_fft_tf(vol, otf):
     input = tf.complex(vol, tf.zeros(vol.shape, dtype=tf.float32))

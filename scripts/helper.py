@@ -3,9 +3,26 @@
 import numpy as np
 import os
 from datetime import datetime
+from skimage import io
+import cv2
 from warnings import warn
 from matplotlib import pyplot as plt
 import tensorflow as tf
+
+
+# ****************************************************************************
+# *                           LOAD SPECIFIC DATASETS                         *
+# ****************************************************************************
+
+
+# def load_dub_image(path, cut=False, resize):
+#     vol = io.imread(path)
+#     vol = swapAxes(vol, swap=True)
+#     if cut:
+#         c = int((vol.shape[1]-img.shape[0])/2)
+#         vol = vol[:,c:vol.shape[1]-c]
+#     else:
+#         vol = cv2.resize(th1, (196, 128))
 
 
 # ****************************************************************************
@@ -218,12 +235,13 @@ def ifftshift3d(tensor):
 # ****************************************************************************
 
 
-def image_saver(img, title, dataset_name, epoch, batch_i):
-    filename = "images/{0}/{1}/{2}_{3}.png".format(dataset_name, title,  epoch, batch_i)
-    fig, ax = plt.subplots(nrows=1, ncols=1, figsize=(12, 12))
-    ax.imshow(img, cmap='gray')
-    fig.savefig(filename)
-    plt.close(fig)
+def print_volume_statistics(vol, name):
+    print('name:\t', name)
+    print('shape:\t', vol.shape)
+    print('min:\t', np.around(np.min(vol), decimals=2))
+    print('median:\t', np.around(np.median(vol), decimals=2))
+    print('mean:\t', np.around(np.mean(vol), decimals=2))
+    print('max:\t', np.around(np.max(vol), decimals=2), '\n')
 
 
 def openTensorboard(cmd="tensorboard --logdir=logs/"):
