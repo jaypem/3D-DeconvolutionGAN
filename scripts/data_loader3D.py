@@ -2,7 +2,6 @@
 
 from glob import glob
 import numpy as np
-import enum
 from skimage import io
 from skimage.transform import resize
 import sys
@@ -18,23 +17,11 @@ def print_volume_dimension(path, max_print=5):
     for i, p in enumerate(path):
         if i >= max_print:
             break
-
         try:
             vol = io.imread(p)
             print(i,vol.shape)
         except:
             print('skip file:', p)
-
-
-class MANIPULATION(enum.IntEnum):
-    SPATIAL_UP = 0
-    SPATIAL_DOWN = 1
-    SPATIAL_MIN = 2
-    SPATIAL_RESIZE = 3
-    FREQUENCY_UP = 4
-    FREQUENCY_DOWN = 5
-    FREQUENCY_MIN = 6
-    NONE = 7
 
 
 class DataLoader3D():
@@ -48,7 +35,7 @@ class DataLoader3D():
             self.e_v = 0
         else:
             self.e_v = hp.calculate_stack_manipulation(self.manipulation, self.vol_original[2], self.vol_resize[2])
-        if not (self.manipulation is MANIPULATION.SPATIAL_RESIZE or self.manipulation is MANIPULATION.NONE):
+        if not (self.manipulation == 'SPATIAL_RESIZE' or self.manipulation == 'NONE'):
             self.vol_resize = (self.vol_original[0], self.vol_original[1], self.vol_original[2]+self.e_v)
         path = glob('../data/3D/%s/*' % (self.dataset_name))
         self.path = [item for item in path if item.endswith('.tiff') or item.endswith('.tif')]
@@ -86,26 +73,22 @@ class DataLoader3D():
         vols_B = []
         for vol in batch_images:
             vol_A = self.imread(vol)
-            if(0):
-                vol_B = deconv.conv3d_fft(vol_A, self.otf)
-            else:
-                sigma = 2
-                vol_B = scipy.ndimage.filters.gaussian_filter(vol_A, sigma=(sigma, sigma, sigma), order=0)
             # vol_B = deconv.conv3d_fft(vol_A, self.otf)
+
+            sigma = 2
+            vol_B = scipy.ndimage.filters.gaussian_filter(vol_A, sigma=(sigma, sigma, sigma), order=0)
 
             vol_A = self.cut_volume(vol_A, self.vol_resize, centered=True)
-            # vol_B = deconv.conv3d_fft(vol_A, self.otf)
             vol_B = self.cut_volume(vol_B, self.vol_resize, centered=True)
 
-            if not self.manipulation == MANIPULATION.NONE:
+            if not self.manipulation == 'NONE':
                 vol_A = self.manipulate_stack(vol_A)
                 vol_B = self.manipulate_stack(vol_B)
             vols_A.extend([vol_A])
 
-            # create conditional volume,
-            # if execution is a simulation: add noise to simulate the measurement
+            # add poisson and gaussian noise to measurement
             if self.add_microscopy_noise:
-                vol_B = vol_B # TODO deconv.add_poisson(vol_B) + deconv.create_gaussian_noise(vol_B)
+                vol_B = deconv.add_poisson(vol_B) #+ deconv.create_gaussian_noise(vol_B)
             vols_B.extend([vol_B])
 
             if (0): #add_noise:
@@ -133,7 +116,7 @@ class DataLoader3D():
 
         return vols_A, vols_B
 
-    def load_batch(self, batch_size, add_noise, random_image=False):
+    def load_batch(self, batch_size, add_noise):
         self.n_batches = int(len(self.path) / batch_size)
 
         if self.n_batches == 1:
@@ -145,75 +128,51 @@ class DataLoader3D():
             batch = self.path[i*batch_size:(i+1)*batch_size]
             vols_A, vols_B = [], []
 
-            # for samling, receive a random image from the dataset
-            if random_image:
-                batch = np.random.choice(self.path, size=1)
-                print(batch)
-
             for vol in batch:
                 vol_A = self.imread(vol)
-                if(0):
-                    vol_B = deconv.conv3d_fft(vol_A, self.otf)
-                else:
-                    sigma = 2
-                    vol_B = scipy.ndimage.filters.gaussian_filter(vol_A, sigma=(sigma, sigma, sigma), order=0)
+                # vol_B = deconv.conv3d_fft(vol_A, self.otf)
 
-                # print(vol)
-                # return 0
-
-                # import matplotlib.pyplot as plt
-                # print(vol_A.shape, vol_B.shape)
-                # # plt.imshow(vol_A[:,:,4], cmap='gray')
-                # f = plt.figure(figsize=(15,10))
-                # plt.subplot(121); plt.imshow(vol_A[:,:,40], cmap='gray');
-                # plt.xticks([]); plt.yticks([]); plt.title('original stack', fontsize=25)
-                # plt.subplot(122); plt.imshow(vol_B[:,:,40], cmap='gray');
-                # plt.xticks([]); plt.yticks([]); plt.title('stack(volume) filtered with OTF', fontsize=22)
-                # plt.show()
+                sigma = 1 #2
+                vol_B = scipy.ndimage.filters.gaussian_filter(vol_A, sigma=(sigma, sigma, sigma), order=0)
 
                 # arr = {'vol_B': vol_B, 'vol_A': vol_A}
                 # scipy.io.savemat('test.mat', arr)
 
                 vol_A = self.cut_volume(vol_A, self.vol_resize, centered=True)
-                # vol_B = deconv.conv3d_fft(vol_A, self.otf)
                 vol_B = self.cut_volume(vol_B, self.vol_resize, centered=True)
-                # hp.print_volume_statistics(vol_A, 'vol_A')
-                # hp.print_volume_statistics(vol_B, 'vol_B')
 
-                if not self.manipulation == MANIPULATION.NONE:
+                if not self.manipulation == 'NONE':
                     vol_A = self.manipulate_stack(vol_A)
                     vol_B = self.manipulate_stack(vol_B)
 
                 vols_A.extend([vol_A])
 
-                # create conditional volume,
-                # if execution is a simulation: add noise to simulate the measurement
-                # vol_B = deconv.conv3d_fft(vol_A, self.otf)
+                # add poisson and gaussian noise to measurement
                 if self.add_microscopy_noise:
-                    vol_B = vol_B # # TODO:  deconv.create_gaussian_noise(vol_B) #+deconv.add_poisson(vol_B)
+                    vol_B = deconv.add_poisson(vol_B) #deconv.create_gaussian_noise(vol_B) #+deconv.add_poisson(vol_B)
                 vols_B.extend([vol_B])
 
-                # if (0): #add_noise:
-                #     # manipulate original image and convolve the manipulated images after that
-                #     flip_A = deconv.flip_vol(vol_A)
-                #     roll_A = deconv.roll_vol(vol_A, fraction=.1)
-                #     shift_A = deconv.add_affineTransformation(vol_A)
-                #     log_intensity_A = deconv.add_logIntensityTransformation(vol_A)
-                #
-                #     flip_B = deconv.conv3d_fft(flip_A, self.otf)
-                #     roll_B = deconv.conv3d_fft(roll_A, self.otf)
-                #     shift_B = deconv.conv3d_fft(shift_A, self.otf)
-                #     log_intensity_B = deconv.conv3d_fft(log_intensity_A, self.otf)
-                #     # https://arxiv.org/pdf/1711.04340.pdf Introduction
-                #     # random translations,rotations and flips as well as addition of Gaussian noise
-                #     if self.add_microscopy_noise:
-                #         flip_B = deconv.add_poisson(flip_B) + deconv.create_gaussian_noise(flip_B)
-                #         roll_B = deconv.add_poisson(roll_B) + deconv.create_gaussian_noise(roll_B)
-                #         shift_B = deconv.add_poisson(shift_B) + deconv.create_gaussian_noise(shift_B)
-                #         log_intensity_B = deconv.add_poisson(log_intensity_B) + deconv.create_gaussian_noise(log_intensity_B)
-                #
-                #     vols_A.extend([flip_A, roll_A, shift_A, log_intensity_A])
-                #     vols_B.extend([flip_B, roll_B, shift_B, log_intensity_B])
+                if (0): #add_noise:
+                    # manipulate original image and convolve the manipulated images after that
+                    flip_A = deconv.flip_vol(vol_A)
+                    roll_A = deconv.roll_vol(vol_A, fraction=.1)
+                    shift_A = deconv.add_affineTransformation(vol_A)
+                    log_intensity_A = deconv.add_logIntensityTransformation(vol_A)
+
+                    flip_B = deconv.conv3d_fft(flip_A, self.otf)
+                    roll_B = deconv.conv3d_fft(roll_A, self.otf)
+                    shift_B = deconv.conv3d_fft(shift_A, self.otf)
+                    log_intensity_B = deconv.conv3d_fft(log_intensity_A, self.otf)
+                    # https://arxiv.org/pdf/1711.04340.pdf Introduction
+                    # random translations,rotations and flips as well as addition of Gaussian noise
+                    if self.add_microscopy_noise:
+                        flip_B = deconv.add_poisson(flip_B) + deconv.create_gaussian_noise(flip_B)
+                        roll_B = deconv.add_poisson(roll_B) + deconv.create_gaussian_noise(roll_B)
+                        shift_B = deconv.add_poisson(shift_B) + deconv.create_gaussian_noise(shift_B)
+                        log_intensity_B = deconv.add_poisson(log_intensity_B) + deconv.create_gaussian_noise(log_intensity_B)
+
+                    vols_A.extend([flip_A, roll_A, shift_A, log_intensity_A])
+                    vols_B.extend([flip_B, roll_B, shift_B, log_intensity_B])
 
             vols_A = np.array(vols_A)/127.5 - 1.
             vols_B = np.array(vols_B)/127.5 - 1.
@@ -263,34 +222,34 @@ class DataLoader3D():
 
     def manipulate_stack(self, vol, pad_mode='linear_ramp'):
         pad = ((0,0), (0,0), hp.calculate_pad_crop_value(self.e_v))
-        if self.manipulation == MANIPULATION.SPATIAL_UP:
+        if self.manipulation == 'SPATIAL_UP':
             return np.pad(vol, pad_width=pad, mode=pad_mode)
-        elif self.manipulation == MANIPULATION.SPATIAL_DOWN:
+        elif self.manipulation == 'SPATIAL_DOWN':
             return vol[:,:,:self.vol_resize[2]]
-        elif self.manipulation == MANIPULATION.SPATIAL_MIN:
+        elif self.manipulation == 'SPATIAL_MIN':
             x = hp.calculate_stack_resize(self.vol_original[2], 'min')[0]
             if 2**x < self.vol_original[2]:
                 return vol[:,:,:self.vol_resize[2]]
             else:
                 return np.pad(vol, pad_width=pad, mode=pad_mode)
-        elif self.manipulation == MANIPULATION.SPATIAL_RESIZE:
+        elif self.manipulation == 'SPATIAL_RESIZE':
             # interpolation: default bi-linear
             return resize(vol, self.vol_resize)#, anti_aliasing=True)
-        elif self.manipulation == MANIPULATION.FREQUENCY_UP:
+        elif self.manipulation == 'FREQUENCY_UP':
             vol_fft = np.fft.fftn(vol)
             vol_fftshift = np.fft.fftshift(vol_fft)
             vol_fftshift = np.pad(vol_fftshift, pad_width=pad, mode='constant')
             vol_fftshift = np.fft.ifftshift(vol_fftshift)
             vol_fft = np.fft.ifftn(vol_fftshift)
             return np.real(vol_fft*np.conj(vol_fft))
-        elif self.manipulation == MANIPULATION.FREQUENCY_DOWN:
+        elif self.manipulation == 'FREQUENCY_DOWN':
             vol_fft = np.fft.fftn(vol)
             vol_fftshift = np.fft.fftshift(vol_fft)
             vol_fftshift = vol_fftshift[:,:,:self.vol_resize[2]]
             vol_fftshift = np.fft.ifftshift(vol_fftshift)
             vol_fft = np.fft.ifftn(vol_fftshift)
             return np.real(vol_fft*np.conj(vol_fft))
-        elif self.manipulation == MANIPULATION.FREQUENCY_MIN:
+        elif self.manipulation == 'FREQUENCY_MIN':
             x = hp.calculate_stack_resize(self.vol_original[2], 'constant')[0]
             vol_fft = np.fft.fftn(vol)
             vol_fftshift = np.fft.fftshift(vol_fft)

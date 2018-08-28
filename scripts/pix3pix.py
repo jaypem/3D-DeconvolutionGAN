@@ -29,7 +29,7 @@ class Pix3Pix():
     def req_key(self, key):
         return list(self.settings[key].keys())[0]
 
-    def __init__(self, vol_original, stack_manipulation):
+    def __init__(self, vol_original):
         # Import settings
         with open('{}/config.json'.format(os.path.dirname(__file__))) as json_data:
             self.settings = json.load(json_data)['selected']
@@ -42,7 +42,7 @@ class Pix3Pix():
         self.dataset_name = self.settings['DATASET_NAME']
         self.data_loader = DataLoader3D(micro_noise=self.settings['ADD_MICRO_NOISE'],
                                         d_name=self.settings['DATASET_NAME'],
-                                        manipulation=stack_manipulation,
+                                        manipulation=self.settings['MANIPULATION_STACKS'],
                                         vol_original=vol_original,
                                         vol_resize=vol_resize,
                                         norm=self.settings["PSF_OTF_NORM"])
@@ -245,10 +245,10 @@ class Pix3Pix():
                 valid, fake = fake, valid
 
         for epoch in range(epochs):
-            for batch_i, (vols_A, vols_B) in enumerate(self.data_loader.load_batch(batch_size, self.settings['ADD_MICRO_NOISE'])):
+            for batch_i, (vols_A, vols_B) in \
+                    enumerate(self.data_loader.load_batch(batch_size, self.settings['ADD_MICRO_NOISE'])):
                 # expand channel dimension/reshape images
                 vols_A, vols_B = np.expand_dims(vols_A, axis=4), np.expand_dims(vols_B, axis=4)
-
 
                 # return 0
 
@@ -373,7 +373,7 @@ class Pix3Pix():
 
     def save_loss(self, msg, p):
         directory = 'images/{0}/{0}_{1}_{2}'.format(self.dataset_name,
-            p, self.data_loader.manipulation.name)
+            p, self.settings['MANIPULATION_STACKS'])
         if not os.path.exists(directory):
             os.makedirs(directory)
         file = '{0}/{1}_{2}.csv'.format(directory, self.dataset_name, p)

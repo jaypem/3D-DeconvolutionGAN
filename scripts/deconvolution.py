@@ -86,8 +86,12 @@ def add_poisson(vol, NPhot = 10):
     '''
         create an implicit multiplicative poisson noise
     '''
-    vol_output = vol.astype(float)/np.max(vol)*NPhot
-    return np.random.poisson(vol_output)
+    # vol_output = vol.astype(float)/np.max(vol)*NPhot
+    # return np.random.poisson(vol_output)
+    noise = np.random.poisson(lam=.5, size=vol.shape)
+    # from scipy.stats import poisson
+    # noise = poisson.rvs(mu=.5, size=vol.shape)
+    return vol + (vol*noise)
 
 def create_gaussian_noise(vol, mean=0, var=0.1):
     '''

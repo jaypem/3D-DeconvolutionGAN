@@ -138,20 +138,19 @@ def model_loader(day, filename):
 
 
 def calculate_stack_manipulation(manipulation, vol_depth, vol_depth_original=0):
-    from data_loader3D import MANIPULATION
-    if manipulation is MANIPULATION.SPATIAL_UP:
+    if manipulation == 'SPATIAL_UP':
         return calculate_stack_resize(vol_depth, 'up')[1]
-    elif manipulation is MANIPULATION.SPATIAL_DOWN:
+    elif manipulation == 'SPATIAL_DOWN':
         return calculate_stack_resize(vol_depth, 'down')[1]
-    elif manipulation is MANIPULATION.SPATIAL_MIN:
+    elif manipulation == 'SPATIAL_MIN':
         return calculate_stack_resize(vol_depth, 'min')[1]
-    elif manipulation is MANIPULATION.SPATIAL_RESIZE:
+    elif manipulation == 'SPATIAL_RESIZE':
         return vol_depth_original - vol_depth
-    elif manipulation is MANIPULATION.FREQUENCY_UP:
+    elif manipulation == 'FREQUENCY_UP':
         return calculate_stack_resize(vol_depth, 'up')[1]
-    elif manipulation is MANIPULATION.FREQUENCY_DOWN:
+    elif manipulation == 'FREQUENCY_DOWN':
         return calculate_stack_resize(vol_depth, 'down')[1]
-    elif manipulation is MANIPULATION.FREQUENCY_MIN:
+    elif manipulation == 'FREQUENCY_MIN':
         return calculate_stack_resize(vol_depth, 'min')[1]
 
 
