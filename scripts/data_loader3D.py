@@ -2,15 +2,15 @@
 
 from glob import glob
 import numpy as np
+import scipy.io
 from skimage import io
 from skimage.transform import resize
-import sys
+import sys, os
 import tensorflow as tf
 
 import helper as hp
 import deconvolution as deconv
 
-import scipy.io
 
 def print_volume_dimension(path, max_print=5):
     print('dimensions of volumes:')
@@ -25,154 +25,107 @@ def print_volume_dimension(path, max_print=5):
 
 
 class DataLoader3D():
-    def __init__(self, micro_noise, d_name, manipulation, vol_original, vol_resize, norm="OTF"):
-        self.add_microscopy_noise = micro_noise
-        self.dataset_name = d_name
-        self.vol_original = vol_original
+    def __init__(self, micro_noise, d_name, manipulation, vol_original, vol_resize, norm, na):
+        self.__add_micro_noise = list(micro_noise.values())
+        self.__dataset_name = d_name
+        self.__vol_original = vol_original
         self.vol_resize = vol_resize[:3]
-        self.manipulation = manipulation
-        if hp.check_for_two_potency(self.vol_original[2]):
-            self.e_v = 0
+        self.__manipulation = manipulation
+        if hp.check_for_two_potency(self.__vol_original[2]):
+            self.__e_v = 0
         else:
-            self.e_v = hp.calculate_stack_manipulation(self.manipulation, self.vol_original[2], self.vol_resize[2])
-        if not (self.manipulation == 'SPATIAL_RESIZE' or self.manipulation == 'NONE'):
-            self.vol_resize = (self.vol_original[0], self.vol_original[1], self.vol_original[2]+self.e_v)
-        path = glob('../data/3D/%s/*' % (self.dataset_name))
-        self.path = [item for item in path if item.endswith('.tiff') or item.endswith('.tif')]
-        self.vol_n = 0
+            self.__e_v = hp.calculate_stack_manipulation(self.__manipulation,
+                                                        self.__vol_original[2],
+                                                        self.vol_resize[2])
+        if not (self.__manipulation == 'SPATIAL_RESIZE' or self.__manipulation == 'NONE'):
+            self.vol_resize = (self.__vol_original[0], self.__vol_original[1], self.__vol_original[2]+self.__e_v)
+        path = glob('../data/3D/%s/train/*' % (self.__dataset_name))
+        self.__path = [item for item in path if item.endswith('.tiff') or item.endswith('.tif')]
 
-        # TODO: hier relativ den Pfad einbauen von "data_loader3D"
-        sys.path.insert(0, '../scripts/NanoImagingPack')
+        sys.path.insert(0, '{0}/NanoImagingPack'.format(os.path.dirname(os.path.abspath(__file__))))
         from microscopy import PSF3D
         from transformations import ft
 
         if norm == "PSF":
-            psf_temp = PSF3D(im=self.vol_original, ret_val = 'PSF')
-            # psf_temp = PSF3D(im=self.vol_resize, ret_val = 'PSF')
+            # CAUTION: PSF will be shifted in fourier space
+            psf_temp = PSF3D(im=self.__vol_original, NA=na, ret_val='PSF')
             psf_temp = psf_temp/np.sum(psf_temp)
-            # otf_norm = np.fft.fftn(psf_temp)
-            otf_norm = ft(psf_temp, norm=None, force_full_fft=True)
-            self.otf = otf_norm
-            # print(np.sum(psf_temp))
+            self.otf = np.fft.fftn(psf_temp)
         else:
-            otf = PSF3D(im=self.vol_original, ret_val = 'OTF')
-            # otf = PSF3D(im=self.vol_resize, ret_val = 'OTF')
-            self.otf = otf/np.max(np.abs(otf))
-
-            # print(np.max(np.abs(self.otf)))
-            #otf_norm = np.fft.fftshift(otf_norm)
-            # arr = {'psf_temp': psf_temp, 'otf_norm': otf_norm}
-            # scipy.io.savemat('psf.mat', arr)
-            #otf_norm = np.fft.ifftn(psf_norm)
+            # CAUTION: OTF is already shifted
+            otf = PSF3D(im=self.__vol_original, NA=na, ret_val='OTF')
+            otf = otf/np.max(np.abs(otf))
+            self.otf = np.fft.fftshift(otf)
 
 
-    def load_data(self, batch_size=1, add_noise=False):
-        batch_images = np.random.choice(self.path, size=batch_size)
+    def load_data(self, batch_size, add_artificial_noise):
+        batch_images = np.random.choice(self.__path, size=batch_size)
 
-        vols_A = []
-        vols_B = []
+        vols_A, vols_B = [], []
         for vol in batch_images:
             vol_A = self.imread(vol)
-            # vol_B = deconv.conv3d_fft(vol_A, self.otf)
-
-            sigma = 2
-            vol_B = scipy.ndimage.filters.gaussian_filter(vol_A, sigma=(sigma, sigma, sigma), order=0)
+            vol_B = deconv.conv3d_fft(vol_A, self.otf)
+            # vol_B = scipy.ndimage.filters.gaussian_filter(vol_A, sigma=(2, 2, 2), order=0)
 
             vol_A = self.cut_volume(vol_A, self.vol_resize, centered=True)
             vol_B = self.cut_volume(vol_B, self.vol_resize, centered=True)
 
-            if not self.manipulation == 'NONE':
+            if not self.__manipulation == 'NONE':
                 vol_A = self.manipulate_stack(vol_A)
                 vol_B = self.manipulate_stack(vol_B)
-            vols_A.extend([vol_A])
 
             # add poisson and gaussian noise to measurement
-            if self.add_microscopy_noise:
-                vol_B = deconv.add_poisson(vol_B) #+ deconv.create_gaussian_noise(vol_B)
-            vols_B.extend([vol_B])
+            if self.__add_micro_noise[0]:
+                vol_B = self.add_poisson(vol=vol_B,
+										lamda=self.__add_micro_noise[1],
+										NPhot=self.__add_micro_noise[2])
+                vol_B = self.create_gaussian_noise(vol=vol_B,
+										var=self.__add_micro_noise[3])
 
-            if (0): #add_noise:
-                # manipulate original image and convolve the manipulated images after that
-                flip_A = deconv.flip_vol(vol_A)
-                roll_A = deconv.roll_vol(vol_A, fraction=.1)
-                shift_A = deconv.add_affineTransformation(vol_A)
-                log_intensity_A = deconv.add_logIntensityTransformation(vol_A)
-
-                flip_B = deconv.conv3d_fft(flip_A, self.otf)
-                roll_B = deconv.conv3d_fft(roll_A, self.otf)
-                shift_B = deconv.conv3d_fft(shift_A, self.otf)
-                log_intensity_B = deconv.conv3d_fft(log_intensity_A, self.otf)
-                if self.add_microscopy_noise:
-                    flip_B = deconv.add_poisson(flip_B) + deconv.create_gaussian_noise(flip_B)
-                    roll_B = deconv.add_poisson(roll_B) + deconv.create_gaussian_noise(roll_B)
-                    shift_B = deconv.add_poisson(shift_B) + deconv.create_gaussian_noise(shift_B)
-                    log_intensity_B = deconv.add_poisson(log_intensity_B) + deconv.create_gaussian_noise(log_intensity_B)
-
-                vols_A.extend([flip_A, roll_A, shift_A, log_intensity_A])
-                vols_B.extend([flip_B, roll_B, shift_B, log_intensity_B])
+            vols_A.append(vol_A)
+            vols_B.append(vol_B)
 
         vols_A = np.array(vols_A)/127.5 - 1.
         vols_B = np.array(vols_B)/127.5 - 1.
 
         return vols_A, vols_B
 
-    def load_batch(self, batch_size, add_noise):
-        self.n_batches = int(len(self.path) / batch_size)
+    def load_batch(self, batch_size, add_artificial_noise):
+        self.n_batches = int(len(self.__path) / batch_size)
 
         if self.n_batches == 1:
-            print('CAUTION: n_batches = 1, data will not be loaded, length path:', len(self.path))
+            print('CAUTION: n_batches = 1, data will not be loaded, length path:', len(self.__path))
         elif self.n_batches-1 == -1 or self.n_batches-1 == 0:
             print('CAUTION: n_batches = 0 or n_batches = -1, data will not be loaded, check dataset name')
 
         for i in range(self.n_batches-1):
-            batch = self.path[i*batch_size:(i+1)*batch_size]
+            batch = self.__path[i*batch_size:(i+1)*batch_size]
             vols_A, vols_B = [], []
 
             for vol in batch:
                 vol_A = self.imread(vol)
-                # vol_B = deconv.conv3d_fft(vol_A, self.otf)
-
-                sigma = 1 #2
-                vol_B = scipy.ndimage.filters.gaussian_filter(vol_A, sigma=(sigma, sigma, sigma), order=0)
-
-                # arr = {'vol_B': vol_B, 'vol_A': vol_A}
-                # scipy.io.savemat('test.mat', arr)
+                vol_B = deconv.conv3d_fft(vol_A, self.otf)
+                # vol_B = scipy.ndimage.filters.gaussian_filter(vol_A, sigma=(2, 2, 2), order=0)
 
                 vol_A = self.cut_volume(vol_A, self.vol_resize, centered=True)
                 vol_B = self.cut_volume(vol_B, self.vol_resize, centered=True)
 
-                if not self.manipulation == 'NONE':
+                if not self.__manipulation == 'NONE':
                     vol_A = self.manipulate_stack(vol_A)
                     vol_B = self.manipulate_stack(vol_B)
 
-                vols_A.extend([vol_A])
-
                 # add poisson and gaussian noise to measurement
-                if self.add_microscopy_noise:
-                    vol_B = deconv.add_poisson(vol_B) #deconv.create_gaussian_noise(vol_B) #+deconv.add_poisson(vol_B)
-                vols_B.extend([vol_B])
-
-                if (0): #add_noise:
-                    # manipulate original image and convolve the manipulated images after that
-                    flip_A = deconv.flip_vol(vol_A)
-                    roll_A = deconv.roll_vol(vol_A, fraction=.1)
-                    shift_A = deconv.add_affineTransformation(vol_A)
-                    log_intensity_A = deconv.add_logIntensityTransformation(vol_A)
-
-                    flip_B = deconv.conv3d_fft(flip_A, self.otf)
-                    roll_B = deconv.conv3d_fft(roll_A, self.otf)
-                    shift_B = deconv.conv3d_fft(shift_A, self.otf)
-                    log_intensity_B = deconv.conv3d_fft(log_intensity_A, self.otf)
-                    # https://arxiv.org/pdf/1711.04340.pdf Introduction
-                    # random translations,rotations and flips as well as addition of Gaussian noise
-                    if self.add_microscopy_noise:
-                        flip_B = deconv.add_poisson(flip_B) + deconv.create_gaussian_noise(flip_B)
-                        roll_B = deconv.add_poisson(roll_B) + deconv.create_gaussian_noise(roll_B)
-                        shift_B = deconv.add_poisson(shift_B) + deconv.create_gaussian_noise(shift_B)
-                        log_intensity_B = deconv.add_poisson(log_intensity_B) + deconv.create_gaussian_noise(log_intensity_B)
-
-                    vols_A.extend([flip_A, roll_A, shift_A, log_intensity_A])
-                    vols_B.extend([flip_B, roll_B, shift_B, log_intensity_B])
+                if self.__add_micro_noise[0]:
+                    # print('original:\n', vol_B[:4,:4,0], '\n')
+                    vol_B = self.add_poisson(vol=vol_B,
+                                            lamda=self.__add_micro_noise[1],
+                                            NPhot=self.__add_micro_noise[2])
+                    # print('poisson:\n', vol_B[:4,:4,0], '\n')
+                    vol_B = self.create_gaussian_noise(vol=vol_B,
+                                            var=self.__add_micro_noise[3])
+                    # print('gauss:\n', vol_B[:4,:4,0])
+                vols_A.append(vol_A)
+                vols_B.append(vol_B)
 
             vols_A = np.array(vols_A)/127.5 - 1.
             vols_B = np.array(vols_B)/127.5 - 1.
@@ -187,7 +140,7 @@ class DataLoader3D():
         vol = io.imread(path)
         if swap_vol:
             return hp.swapAxes(vol, swap=True)
-        elif self.vol_original != vol.shape:
+        elif self.__vol_original != vol.shape:
             return hp.swapAxes(vol, swap=True)
         else:
             return vol
@@ -218,48 +171,77 @@ class DataLoader3D():
                 return vol[(crow-r2):(crow+r2), (ccol-c2):(ccol+c2), (cstack-s2):(cstack+s2)]
         except:
             print('ERROR by method: DataLoader3D.cut_volume, resize volume')
-            return resize(vol_A, self.vol_size)
+            return resize(vol_A, self.__vol_size)
 
     def manipulate_stack(self, vol, pad_mode='linear_ramp'):
-        pad = ((0,0), (0,0), hp.calculate_pad_crop_value(self.e_v))
-        if self.manipulation == 'SPATIAL_UP':
+        pad = ((0,0), (0,0), hp.calculate_pad_crop_value(self.__e_v))
+        if self.__manipulation == 'SPATIAL_UP':
             return np.pad(vol, pad_width=pad, mode=pad_mode)
-        elif self.manipulation == 'SPATIAL_DOWN':
+        elif self.__manipulation == 'SPATIAL_DOWN':
             return vol[:,:,:self.vol_resize[2]]
-        elif self.manipulation == 'SPATIAL_MIN':
-            x = hp.calculate_stack_resize(self.vol_original[2], 'min')[0]
-            if 2**x < self.vol_original[2]:
+        elif self.__manipulation == 'SPATIAL_MIN':
+            x = hp.calculate_stack_resize(self.__vol_original[2], 'min')[0]
+            if 2**x < self.__vol_original[2]:
                 return vol[:,:,:self.vol_resize[2]]
             else:
                 return np.pad(vol, pad_width=pad, mode=pad_mode)
-        elif self.manipulation == 'SPATIAL_RESIZE':
+        elif self.__manipulation == 'SPATIAL_RESIZE':
             # interpolation: default bi-linear
             return resize(vol, self.vol_resize)#, anti_aliasing=True)
-        elif self.manipulation == 'FREQUENCY_UP':
+        elif self.__manipulation == 'FREQUENCY_UP':
             vol_fft = np.fft.fftn(vol)
             vol_fftshift = np.fft.fftshift(vol_fft)
             vol_fftshift = np.pad(vol_fftshift, pad_width=pad, mode='constant')
             vol_fftshift = np.fft.ifftshift(vol_fftshift)
             vol_fft = np.fft.ifftn(vol_fftshift)
             return np.real(vol_fft*np.conj(vol_fft))
-        elif self.manipulation == 'FREQUENCY_DOWN':
+        elif self.__manipulation == 'FREQUENCY_DOWN':
             vol_fft = np.fft.fftn(vol)
             vol_fftshift = np.fft.fftshift(vol_fft)
             vol_fftshift = vol_fftshift[:,:,:self.vol_resize[2]]
             vol_fftshift = np.fft.ifftshift(vol_fftshift)
             vol_fft = np.fft.ifftn(vol_fftshift)
             return np.real(vol_fft*np.conj(vol_fft))
-        elif self.manipulation == 'FREQUENCY_MIN':
-            x = hp.calculate_stack_resize(self.vol_original[2], 'constant')[0]
+        elif self.__manipulation == 'FREQUENCY_MIN':
+            x = hp.calculate_stack_resize(self.__vol_original[2], 'constant')[0]
             vol_fft = np.fft.fftn(vol)
             vol_fftshift = np.fft.fftshift(vol_fft)
-            if 2**x < self.vol_original[2]:
+            if 2**x < self.__vol_original[2]:
                 vol_fftshift = vol_fftshift[:,:,:self.vol_resize[2]]
             else:
                 vol_fftshift = np.pad(vol_fftshift, pad_width=pad, mode='edge')
             vol_fftshift = np.fft.ifftshift(vol_fftshift)
             vol_fft = np.fft.ifftn(vol_fftshift)
             return np.real(vol_fft*np.conj(vol_fft))
+
+# ****************************************************************************
+# *                                noise methods                             *
+# ****************************************************************************
+
+    def add_poisson(self, vol, lamda, NPhot):
+        '''
+            create an implicit multiplicative poisson noise
+        '''
+        # return np.random.poisson(lam=lamda, size=vol.shape)
+        vol_output = vol.astype(float)/np.max(vol)*NPhot
+        vol_output = np.abs(np.random.poisson(vol_output)*np.max(vol)/NPhot)
+        # print('poisson noise:\n', vol_output[:4,:4,0])
+        vol_output[vol_output > 255] = 255
+        return vol_output
+
+    def create_gaussian_noise(self, vol, var):
+        '''
+            create an explicit additive gaussion noise (must be explicit added to image)
+        '''
+
+        sigma = var**0.5
+        gauss = np.random.normal(0, sigma, vol.shape)
+        gauss = np.abs(gauss.reshape(vol.shape))
+        gauss = gauss.reshape(vol.shape)
+        # print('gaussnoise:\n', gauss[:4,:4,0])
+        noisy = vol + gauss
+        noisy[noisy > 255] = 255
+        return noisy
 
 # ****************************************************************************
 # *                             TFRecords functions                          *
@@ -284,13 +266,13 @@ class DataLoader3D():
         # open the TFRecords file
         writer = tf.python_io.TFRecordWriter(filename)
 
-        for i in range(len(self.path)):
+        for i in range(len(self.__path)):
             # print how many images are saved every 500 images
             if not i % 500:
-                print('{} data: {}/{}'.format(data, i, len(self.path)))
+                print('{} data: {}/{}'.format(data, i, len(self.__path)))
                 sys.stdout.flush()
             # Load the image
-            img = self.imread(self.path[i]) #.astype(np.float32)
+            img = self.imread(self.__path[i]) #.astype(np.float32)
 
             if labels_given:
                 print('todo: implement this part (not used for GANs)')#label = labels[i]
@@ -302,9 +284,9 @@ class DataLoader3D():
                 #            '{}/image'.format(data): self._bytes_feature(tf.compat.as_bytes(img.tostring()))}
             else:
                 feature = {'{}/image'.format(data): self._bytes_feature(img.tostring()), #tf.compat.as_bytes(img.tostring())),
-                           '{}/height'.format(data): self._int64_feature(self.vol_original_size[0]),
-                           '{}/width'.format(data): self._int64_feature(self.vol_original_size[1]),
-                           '{}/stack'.format(data): self._int64_feature(self.vol_original_size[2])}
+                           '{}/height'.format(data): self._int64_feature(self.__vol_original_size[0]),
+                           '{}/width'.format(data): self._int64_feature(self.__vol_original_size[1]),
+                           '{}/stack'.format(data): self._int64_feature(self.__vol_original_size[2])}
 
             # Create an example protocol buffer
             example = tf.train.Example(features=tf.train.Features(feature=feature))
@@ -361,7 +343,7 @@ class DataLoader3D():
                 label = tf.cast(features['{}/label'.format(data[0])], tf.int32)
 
             # Reshape image data into the original shape
-            image = tf.reshape(image, [self.vol_original_size[0], self.vol_original_size[1], self.vol_original_size[2]])
+            image = tf.reshape(image, [self.__vol_original_size[0], self.__vol_original_size[1], self.__vol_original_size[2]])
             print(image.shape)
 
             # TODO: Any preprocessing here ...
