@@ -11,21 +11,6 @@ import tensorflow as tf
 
 
 # ****************************************************************************
-# *                           LOAD SPECIFIC DATASETS                         *
-# ****************************************************************************
-
-
-# def load_dub_image(path, cut=False, resize):
-#     vol = io.imread(path)
-#     vol = swapAxes(vol, swap=True)
-#     if cut:
-#         c = int((vol.shape[1]-img.shape[0])/2)
-#         vol = vol[:,c:vol.shape[1]-c]
-#     else:
-#         vol = cv2.resize(th1, (196, 128))
-
-
-# ****************************************************************************
 # *                          IMAGE/ARRAY MANIPULATION                        *
 # ****************************************************************************
 
@@ -245,3 +230,13 @@ def print_volume_statistics(vol, name):
 
 def openTensorboard(cmd="tensorboard --logdir=logs/"):
     os.system(cmd)
+
+
+def L1_norm(a, b):
+    l_1 = lambda matrix: np.sum(np.abs(matrix))
+    return l_1(a - b)
+
+
+def L2_norm(a, b):
+    frobenius = lambda matrix: np.sqrt(np.sum(np.square(matrix)))
+    return frobenius(a - b)

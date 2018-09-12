@@ -2,52 +2,54 @@
 	"selection_options": {
 		"NETWORK_DEPTH": ["LOW", "MEDIUM", "HIGH"],
 		"PSF_OTF_NORM": ["PSF", "OTF"],
-		"ADD_MICRO_NOISE": [true, false],
-		"GANHACKS":  [true, false],
-		"INPUT_NOISE_D": [true, false],
-		"ADD_GAUSS_NOISE_G": [true, false],
-		"SAVE_TABLE_IMAGES": [true, false],
-		"SAVE_VOLUME": [true, false],
-		"SAVE_LOGS": [true, false],
-		"SAVE_CONFIG": [true, false],
-		"SAVE_LOSS": [true, false],
 		"MANIPULATION_STACKS": ["NONE", "SPATIAL_UP", "SPATIAL_DOWN", "SPATIAL_MIN", "SPATIAL_RESIZE", "FREQUENCY_UP", "FREQUENCY_DOWN", "FREQUENCY_MIN"],
-		"OPTIMIZER": ["sgd", "adam", "adamdelta"],
-		"LOSS": ["mean_squared_error", "mean_absolute_error", "kullback_leibler_divergence", "categorical_crossentropy"],
-		"DROPOUT": [0.0, 0.5],
-		"ONE-SIDED-LABEL": [0.7, 1.2]
+		"LOSS": ["mse", "mae", "kullback_leibler_divergence", "categorical_crossentropy"]
 	},
 	"selected": {
 		"NETWORK_DEPTH": "MEDIUM",
+		"BATCH_SIZE": 1,
 		"PSF_OTF_NORM": "OTF",
-		"ADD_MICRO_NOISE": true,
+		"OTF_NA": 1.0,
+		"ADD_MICRO_NOISE": {
+			"condition": true,
+			"poisson_lamda": 1,
+			"poisson_NPhot": 100000,
+			"gauss_sigma": 0.01
+			},
 		"GANHACKS":  true,
-		"INPUT_NOISE_D": false,
-		"ADD_GAUSS_NOISE_G": false,
+		"INSTANCE_NOISE": false,
 		"SAVE_TABLE_IMAGES": true,
-		"SAVE_VOLUME": true,
+		"SAVE_VOLUME": false,
 		"SAVE_LOGS": false,
 		"SAVE_CONFIG": true,
-		"SAVE_LOSS": false,
+		"SAVE_LOSS": true,
 		"MANIPULATION_STACKS": "NONE",
-		"OPTIMIZER": {
-			"discriminator": "adam",
-			"combined": "adam",
-			"learning_rate": 0.0001,
-			"loss_weights": [0, 10]
-		},
-		"LOSS": {
-			"discriminator": "mean_squared_error",
-			"combined": ["mean_squared_error", "mean_absolute_error"]
-		},
+		"ADAM_OPTIMIZER_LEARNRATE": 0.0001,
+		"LOSS_WEIGHTS": [0, 10],
+		"D_LOSS": "mse",
+		"COMBINED_LOSS": ["kullback_leibler_divergence", "mae"],
 		"DROPOUT": 0.25,
-		"ONE-SIDED-LABEL": 0.7,
-		"FLIP_LABEL_PROB": 0.4,
+		"ONE-SIDED-LABEL": 0.85,
+		"FLIP_LABEL_PROB": 0.1,
+		"GAUSSIAN_NOISE_TO_G": 0.07,
 		"RESIZE": {
 			"width": 64,
 			"height": 64,
 			"depth": 64
 		},
 		"DATASET_NAME": "VascuSynth"
+	},
+	"grid_search": {
+		"NETWORK_DEPTH": ["MEDIUM", "HIGH"],
+		"BATCH_SIZE": [1],
+		"OTF_NA": [1.0, 1.5],
+		"GANHACKS":  [true, false],
+		"INSTANCE_NOISE": [true, false],
+		"ADAM_OPTIMIZER_LEARNRATE": [0.0001, 0.00001],
+		"LOSS_WEIGHTS": [ [0, 10], [0, 20] ],
+		"D_LOSS": ["mse", "mae", "kullback_leibler_divergence"],
+		"COMBINED_LOSS": [ ["mse", "mae"], ["mae", "mae"], ["kullback_leibler_divergence", "mae"] ],
+		"DROPOUT": [0.25, 0.5],
+		"FLIP_LABEL_PROB": [0.1, 0.3]
 	}
 }
