@@ -2,7 +2,8 @@
 
 from glob import glob
 import numpy as np
-import scipy.io
+from scipy.ndimage import interpolation
+from scipy.cluster.vq import whiten
 from skimage import io
 from skimage.transform import resize
 import sys, os
@@ -25,12 +26,13 @@ def print_volume_dimension(path, max_print=5):
 
 
 class DataLoader3D():
-    def __init__(self, micro_noise, d_name, manipulation, vol_original, vol_resize, norm, na):
-        self.__add_micro_noise = list(micro_noise.values())
+    def __init__(self, micro_noise, d_name, manipulation, vol_original, vol_resize, otf, augm_factor):
+        self.__micro_noise_NPhot = micro_noise
         self.__dataset_name = d_name
         self.__vol_original = vol_original
         self.vol_resize = vol_resize[:3]
         self.__manipulation = manipulation
+        self.__augm_factor = augm_factor
         if hp.check_for_two_potency(self.__vol_original[2]):
             self.__e_v = 0
         else:
@@ -46,26 +48,30 @@ class DataLoader3D():
         from microscopy import PSF3D
         from transformations import ft
 
-        if norm == "PSF":
+        if otf['ret_val'] == "PSF":
             # CAUTION: PSF will be shifted in fourier space
             psf_temp = PSF3D(im=self.__vol_original, NA=na, ret_val='PSF')
             psf_temp = psf_temp/np.sum(psf_temp)
             self.otf = np.fft.fftn(psf_temp)
         else:
             # CAUTION: OTF is already shifted
-            otf = PSF3D(im=self.__vol_original, NA=na, ret_val='OTF')
+            otf = PSF3D(im=self.__vol_original,
+                        NA=otf['NA'],
+                        wavelength=otf['wavelength'],
+                        ret_val=otf['ret_val'])
             otf = otf/np.max(np.abs(otf))
             self.otf = np.fft.fftshift(otf)
 
 
-    def load_data(self, batch_size, add_artificial_noise):
-        batch_images = np.random.choice(self.__path, size=batch_size)
+    def load_data(self, batch_size):
+        path = glob('../data/3D/%s/test/*' % (self.__dataset_name))
+        path = [item for item in path if item.endswith('.tiff') or item.endswith('.tif')]
+        batch_images = np.random.choice(path, size=batch_size)
 
         vols_A, vols_B = [], []
         for vol in batch_images:
             vol_A = self.imread(vol)
             vol_B = deconv.conv3d_fft(vol_A, self.otf)
-            # vol_B = scipy.ndimage.filters.gaussian_filter(vol_A, sigma=(2, 2, 2), order=0)
 
             vol_A = self.cut_volume(vol_A, self.vol_resize, centered=True)
             vol_B = self.cut_volume(vol_B, self.vol_resize, centered=True)
@@ -75,12 +81,8 @@ class DataLoader3D():
                 vol_B = self.manipulate_stack(vol_B)
 
             # add poisson and gaussian noise to measurement
-            if self.__add_micro_noise[0]:
-                vol_B = self.add_poisson(vol=vol_B,
-										lamda=self.__add_micro_noise[1],
-										NPhot=self.__add_micro_noise[2])
-                vol_B = self.create_gaussian_noise(vol=vol_B,
-										var=self.__add_micro_noise[3])
+            vol_B = self.add_poisson(vol=vol_B, NPhot=self.__micro_noise_NPhot)
+            vol_B = self.create_gaussian_noise(vol=vol_B, NPhot=self.__micro_noise_NPhot)
 
             vols_A.append(vol_A)
             vols_B.append(vol_B)
@@ -90,7 +92,7 @@ class DataLoader3D():
 
         return vols_A, vols_B
 
-    def load_batch(self, batch_size, add_artificial_noise):
+    def load_batch(self, batch_size):
         self.n_batches = int(len(self.__path) / batch_size)
 
         if self.n_batches == 1:
@@ -101,11 +103,13 @@ class DataLoader3D():
         for i in range(self.n_batches-1):
             batch = self.__path[i*batch_size:(i+1)*batch_size]
             vols_A, vols_B = [], []
+            vols_A_aug, vols_B_aug = [], []
 
             for vol in batch:
                 vol_A = self.imread(vol)
+                vol_A_aug, vol_B_aug = self.data_augmentation(vol_A)
+
                 vol_B = deconv.conv3d_fft(vol_A, self.otf)
-                # vol_B = scipy.ndimage.filters.gaussian_filter(vol_A, sigma=(2, 2, 2), order=0)
 
                 vol_A = self.cut_volume(vol_A, self.vol_resize, centered=True)
                 vol_B = self.cut_volume(vol_B, self.vol_resize, centered=True)
@@ -115,22 +119,20 @@ class DataLoader3D():
                     vol_B = self.manipulate_stack(vol_B)
 
                 # add poisson and gaussian noise to measurement
-                if self.__add_micro_noise[0]:
-                    # print('original:\n', vol_B[:4,:4,0], '\n')
-                    vol_B = self.add_poisson(vol=vol_B,
-                                            lamda=self.__add_micro_noise[1],
-                                            NPhot=self.__add_micro_noise[2])
-                    # print('poisson:\n', vol_B[:4,:4,0], '\n')
-                    vol_B = self.create_gaussian_noise(vol=vol_B,
-                                            var=self.__add_micro_noise[3])
-                    # print('gauss:\n', vol_B[:4,:4,0])
-                vols_A.append(vol_A)
-                vols_B.append(vol_B)
+                vol_B = self.add_poisson(vol=vol_B, NPhot=self.__micro_noise_NPhot)
+                vol_B = self.create_gaussian_noise(vol=vol_B, NPhot=self.__micro_noise_NPhot)
+
+                vols_A.append(vol_A); vols_B.append(vol_B)
+                for i in range(len(vol_A_aug)):
+                    vols_A_aug.append(vol_A_aug[i]); vols_B_aug.append(vol_B_aug[i])
 
             vols_A = np.array(vols_A)/127.5 - 1.
             vols_B = np.array(vols_B)/127.5 - 1.
 
-            yield vols_A, vols_B
+            vols_A_aug = np.array(vols_A_aug)/127.5 - 1.
+            vols_B_aug = np.array(vols_B_aug)/127.5 - 1.
+
+            yield vols_A, vols_B, vols_A_aug, vols_B_aug
 
 # ****************************************************************************
 # *                              Volume operations                           *
@@ -215,33 +217,72 @@ class DataLoader3D():
             return np.real(vol_fft*np.conj(vol_fft))
 
 # ****************************************************************************
-# *                                noise methods                             *
+# *                     noise and data augmentation methods                  *
 # ****************************************************************************
 
-    def add_poisson(self, vol, lamda, NPhot):
+    def add_poisson(self, vol, NPhot):
         '''
             create an implicit multiplicative poisson noise
         '''
-        # return np.random.poisson(lam=lamda, size=vol.shape)
+
         vol_output = vol.astype(float)/np.max(vol)*NPhot
         vol_output = np.abs(np.random.poisson(vol_output)*np.max(vol)/NPhot)
-        # print('poisson noise:\n', vol_output[:4,:4,0])
         vol_output[vol_output > 255] = 255
         return vol_output
 
-    def create_gaussian_noise(self, vol, var):
+    def create_gaussian_noise(self, vol, NPhot):
         '''
             create an explicit additive gaussion noise (must be explicit added to image)
         '''
 
-        sigma = var**0.5
-        gauss = np.random.normal(0, sigma, vol.shape)
-        gauss = np.abs(gauss.reshape(vol.shape))
-        gauss = gauss.reshape(vol.shape)
-        # print('gaussnoise:\n', gauss[:4,:4,0])
-        noisy = vol + gauss
-        noisy[noisy > 255] = 255
-        return noisy
+        vol_output = vol.astype(float)/np.max(vol)*NPhot
+        vol_output = np.abs(np.random.normal(vol_output)*np.max(vol)/NPhot)
+        vol_output[vol_output > 255] = 255
+        return vol_output
+
+    def put_noise(self, vol):
+        vol_temp = self.add_poisson(vol=vol, NPhot=self.__micro_noise_NPhot)
+        return self.create_gaussian_noise(vol=vol_temp, NPhot=self.__micro_noise_NPhot)
+
+    def data_augmentation(self, vol_A):
+        ''' self written data augmentation for 3D images
+            keras: imageDataGenerator can't apply on 3D images
+
+        '''
+        methods = [self.flip, self.roll, self.rotate, self.svd_whiten]
+        functions = np.random.choice(methods, size=self.__augm_factor)
+        vols_A_aug, vols_B_aug = [], []
+
+        for func in functions:
+            vol_A_aug = func(vol_A)
+            vol_B_aug = deconv.conv3d_fft(vol_A_aug, self.otf)
+
+            vol_A_aug = self.cut_volume(vol_A_aug, self.vol_resize, centered=True)
+            vol_B_aug = self.cut_volume(vol_B_aug, self.vol_resize, centered=True)
+            if not self.__manipulation == 'NONE':
+                vol_A_aug = self.manipulate_stack(vol_A_aug)
+                vol_B_aug = self.manipulate_stack(vol_B_aug)
+
+            vol_B_aug = self.put_noise(vol_B_aug)
+
+            vols_A_aug.append(vol_A_aug)
+            vols_B_aug.append(vol_B_aug)
+
+        return vols_A_aug, vols_B_aug
+
+    def flip(self, vol):
+        return np.flip(vol, axis=np.random.randint(0,3))
+
+    def roll(self, vol):
+        fraction = np.abs(0.5-np.random.rand())
+        return np.roll(vol, int(vol.shape[0]*fraction))
+
+    def rotate(self, vol):
+        angle = np.random.randint(5,355, size=1)[0]
+        return interpolation.rotate(vol, angle=angle, reshape=False, mode='reflect')
+
+    def svd_whiten(self, vol):
+        return whiten(vol)
 
 # ****************************************************************************
 # *                             TFRecords functions                          *
