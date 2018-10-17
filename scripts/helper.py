@@ -3,17 +3,15 @@
 import numpy as np
 import os
 from datetime import datetime
-from skimage import io
-import cv2
 from warnings import warn
-from matplotlib import pyplot as plt
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 import tensorflow as tf
+from keras.callbacks import Callback
 
 
 # ****************************************************************************
 # *                          IMAGE/ARRAY MANIPULATION                        *
 # ****************************************************************************
-
 
 def tranfer_squared_image(img):
     '''
@@ -45,7 +43,6 @@ def tranfer_squared_image(img):
 
     return img
 
-
 def swapAxes(img, swap=False, manual=False, ax0=0, ax1=1, display=False):
     '''
         swap specified axes
@@ -72,6 +69,29 @@ def swapAxes(img, swap=False, manual=False, ax0=0, ax1=1, display=False):
 # *                               MODEL HANDLING                             *
 # ****************************************************************************
 
+def keras_model_saver(gan, p, path="./../models"):
+    if not os.path.exists(path+p):
+        os.makedirs(path+p)
+
+    tf.keras.models.save_model(
+        gan.discriminator,
+        path="{0}/{1}/D_{1}.h5".format(path, p),
+        overwrite=True,
+        include_optimizer=True
+    )
+    tf.keras.models.save_model(
+        gan.generator,
+        path="{0}/{1}/G_{1}.h5".format(path, p),
+        overwrite=True,
+        include_optimizer=True
+    )
+    tf.keras.models.save_model(
+        gan.combined,
+        path="{0}/{1}/Combined_{1}.h5".format(path, p),
+        overwrite=True,
+        include_optimizer=True
+    )
+    print('save models:\t', "{D,G,Combined}_{1}.h5".format(p))
 
 def model_saver(model_instance, model_name, path="./../models/"):
     now = datetime.now()
@@ -100,7 +120,6 @@ def model_saver(model_instance, model_name, path="./../models/"):
     print('model_saver: model successfully saved in: ', path+date+'/'+js)
     print('model_saver: model successfully saved in: ', path+date+'/'+h5)
 
-
 def model_loader(day, filename):
     file = "./../models/{0}/{1}_model_parameter.json".format(day, filename)
     # load json and create model
@@ -121,7 +140,6 @@ def model_loader(day, filename):
 # *                       STACK MANIPULATION/CALCULATION                     *
 # ****************************************************************************
 
-
 def calculate_stack_manipulation(manipulation, vol_depth, vol_depth_original=0):
     if manipulation == 'SPATIAL_UP':
         return calculate_stack_resize(vol_depth, 'up')[1]
@@ -137,7 +155,6 @@ def calculate_stack_manipulation(manipulation, vol_depth, vol_depth_original=0):
         return calculate_stack_resize(vol_depth, 'down')[1]
     elif manipulation == 'FREQUENCY_MIN':
         return calculate_stack_resize(vol_depth, 'min')[1]
-
 
 def calculate_stack_resize(s, flag):
     '''
@@ -164,11 +181,9 @@ def calculate_stack_resize(s, flag):
         warn('no valid manipulation parameter')
     return x, y
 
-
 def calculate_pad_crop_value(value):
     div = value / 2
     return (np.abs(int(np.floor(div))), int(np.ceil(div)))
-
 
 def check_for_two_potency(value):
     arr = np.arange(1, 12)
@@ -178,7 +193,6 @@ def check_for_two_potency(value):
 # ****************************************************************************
 # *                               FOURIER METHODS                            *
 # ****************************************************************************
-
 
 def fftshift3d(tensor):
     """
@@ -196,7 +210,6 @@ def fftshift3d(tensor):
     front, back = tf.split(tensor, 2, -3)
     tensor = tf.concat([back, front], -3)
     return tensor
-
 
 def ifftshift3d(tensor):
     """
@@ -218,6 +231,18 @@ def ifftshift3d(tensor):
 # *                                    OTHER                                 *
 # ****************************************************************************
 
+def colorbar(Mappable, Orientation='vertical', Extend='both'):
+    Ax = Mappable.axes
+    fig = Ax.figure
+    divider = make_axes_locatable(Ax)
+    Cax = divider.append_axes("right", size="3%", pad=0.08)
+    return fig.colorbar(
+        mappable=Mappable,
+        cax=Cax,
+        use_gridspec=True,
+        extend=Extend,  # mostra um colorbar full resolution de z
+        orientation=Orientation
+    )
 
 def print_volume_statistics(vol, name):
     print('name:\t', name)
@@ -227,15 +252,12 @@ def print_volume_statistics(vol, name):
     print('mean:\t', np.around(np.mean(vol), decimals=2))
     print('max:\t', np.around(np.max(vol), decimals=2), '\n')
 
-
 def openTensorboard(cmd="tensorboard --logdir=logs/"):
     os.system(cmd)
-
 
 def L1_norm(a, b):
     l_1 = lambda matrix: np.sum(np.abs(matrix))
     return l_1(a - b)
-
 
 def L2_norm(a, b):
     frobenius = lambda matrix: np.sqrt(np.sum(np.square(matrix)))
