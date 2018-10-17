@@ -6,13 +6,11 @@
 import numpy as np
 from skimage import restoration
 import tensorflow as tf
-import sys
-import os
 
 import helper as hp
-# TODO: hier relativ den Pfad einbauen von "deconvolution"
-sys.path.insert(0, '../scripts/NanoImagingPack')
-from transformations import *
+
+# sys.path.insert(0, '{0}/NanoImagingPack'.format(os.path.dirname(os.path.abspath(__file__))))
+# from transformations import *
 
 def conv2d(img, f_type, radius_perc, k_size=5, show_mask=False):
     import cv2
@@ -52,71 +50,23 @@ def abssqr_tf(vol):
     return tf.real(vol*tf.conj(vol))
 
 def conv3d_fft(vol, otf):
-    vol_fft = ft(im=vol, shift=True, norm=None, force_full_fft=True)
-
-    # vol_conv =  np.multiply(vol_fft, otf)
-    # vol_ifft = ift(im=vol_conv, shift=False, norm=None)
-    # return abssqr(vol_ifft)
-    return ift(vol_fft*otf, shift=True, norm=None, ret='abs')
-
-# def conv3d_fft(vol, otf):
-#     vol_fft = np.fft.fftn(vol, norm=None)
-#     # vol_fft = np.fft.fftshift(vol_fft)
-#
-#     vol_fft = np.multiply(vol_fft, otf)
-#
-#     # vol_fft = np.fft.ifftshift(vol_fft)
-#     vol_fft = np.fft.ifftn(vol_fft, norm=None)
-#     return abssqr(vol_fft)
+    vol_fft = np.fft.fftn(vol)
+    vol_fft = np.fft.ifftn(otf*vol_fft)
+    return abssqr(vol_fft)
 
 def conv3d_fft_tf(vol, otf):
+    # TODO: fertigstellen: ungeshiftetes Objeket und OTF benutzen
     input = tf.complex(vol, tf.zeros(vol.shape, dtype=tf.float32))
     input = tf.cast(input, dtype=tf.complex64)
     otf = tf.cast(otf, dtype=tf.complex64)
     vol_fft = tf.fft3d(input)
-    vol_fftshift = hp.fftshift3d(vol_fft)
+    # vol_fftshift = hp.fftshift3d(vol_fft)
 
     vol_fftshift = tf.multiply(vol_fftshift, otf)
 
-    vol_fftshift = hp.ifftshift3d(vol_fftshift)
+    # vol_fftshift = hp.ifftshift3d(vol_fftshift)
     vol_fft = tf.ifft3d(vol_fftshift)
     return abssqr_tf(vol_fft)
-
-def add_poisson(vol, NPhot = 10):
-    '''
-        create an implicit multiplicative poisson noise
-    '''
-    # vol_output = vol.astype(float)/np.max(vol)*NPhot
-    # return np.random.poisson(vol_output)
-    noise = np.random.poisson(lam=.5, size=vol.shape)
-    # from scipy.stats import poisson
-    # noise = poisson.rvs(mu=.5, size=vol.shape)
-    return vol + (vol*noise)
-
-def create_gaussian_noise(vol, mean=0, var=0.1):
-    '''
-        create an explicit additive gaussion noise (must be explicit added to image)
-    '''
-    sigma = var**0.5
-    return np.random.normal(mean, sigma, vol.shape)
-
-def flip_vol(vol):
-    return np.fliplr(vol)
-
-def roll_vol(vol, fraction=.1):
-    return np.roll(vol, int(vol.shape[0]*fraction))
-
-def add_affineTransformation(vol):
-    import cv2
-    num_rows, num_cols = vol.shape[:2]
-    x, y = np.random.randint(low=5, high=20, size=2)
-    translation_matrix = np.float32([ [1,0,x], [0,1,y] ])
-    return cv2.warpAffine(vol, translation_matrix, (num_cols, num_rows))
-
-def add_logIntensityTransformation(vol):
-    c = 1/np.log(1+255)
-    # ret[ret < 0.] = 0 # might be used if bug occur
-    return c*np.log(1+vol).astype(dtype=np.float32)
 
 
 class Deconvolution_3D():
@@ -196,6 +146,41 @@ class Deconvolution_3D():
                 self.summary = tf.summary.merge_all()
 
                 # TODO: implemnt: https://www.tensorflow.org/versions/r1.1/get_started/get_started
+
+
+        # with tf.device('/cpu:0'): "/device:GPU:0"
+        #   a = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[2, 3], name='a')
+        #   b = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2], name='b')
+        # c = tf.matmul(a, b)
+        # # Creates a session with log_device_placement set to True.
+        # sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
+        # # Runs the op.
+        # print(sess.run(c))
+
+
+        # config = tf.ConfigProto()
+        # config.gpu_options.per_process_gpu_memory_fraction = 0.4
+        # session = tf.Session(config=config, ...)
+
+        # using multiple GPUs
+        # Creates a graph.
+        # c = []
+        # for d in ['/device:GPU:2', '/device:GPU:3']:
+        #   with tf.device(d):
+        #     a = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[2, 3])
+        #     b = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2])
+        #     c.append(tf.matmul(a, b))
+        # with tf.device('/cpu:0'):
+        #   sum = tf.add_n(c)
+        # # Creates a session with log_device_placement set to True.
+        # sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
+        # # Runs the op.
+        # print(sess.run(sum))
+
+
+        # TODO: hier evtl gpu_options = tf.GPUOptions(allow_growth=True)
+        # session = tf.InteractiveSession(config=tf.ConfigProto(gpu_options=gpu_options))
+        # GPU gesteuerte Session starten
 
 
         # self.graph = tf.Graph()
