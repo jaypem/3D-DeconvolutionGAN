@@ -6,21 +6,21 @@
 import numpy as np
 from skimage import restoration
 import tensorflow as tf
+import matplotlib.pyplot as plt
+import scipy.misc
 
 import helper as hp
 
-# sys.path.insert(0, '{0}/NanoImagingPack'.format(os.path.dirname(os.path.abspath(__file__))))
-# from transformations import *
 
-def conv2d(img, f_type, radius_perc, k_size=5, show_mask=False):
+def conv2d(vol, f_type, radius_perc, k_size=5, show_mask=False):
     import cv2
     if f_type == 'gaussian':
-        img_back = cv2.GaussianBlur(img, (k_size,k_size), 1)
+        vol_back = cv2.GaussianBlur(vol, (k_size,k_size), 1)
     elif f_type == 'ft_low_pass':
-        f = np.fft.fft2(img)
+        f = np.fft.fft2(vol)
         fshift = np.fft.fftshift(f)
 
-        rows, cols = img.shape
+        rows, cols = vol.shape
         crow, ccol = int(rows/2), int(cols/2)
         r = int(rows * radius_perc / 2)
 
@@ -34,20 +34,20 @@ def conv2d(img, f_type, radius_perc, k_size=5, show_mask=False):
         fshift = fshift * mask
 
         f_ishift = np.fft.ifftshift(fshift)
-        img_back = np.fft.ifft2(f_ishift)
-        img_back = np.abs(img_back)
+        vol_back = np.fft.ifft2(f_ishift)
+        vol_back = np.abs(vol_back)
     else:
         print('conv: no suitable filter: ', f_type)
 
-    return img_back
+    return vol_back
 
 def abssqr(vol):
     # get the absolute square of a complex numbers
     return np.real(vol*np.conj(vol))
 
-def abssqr_tf(vol):
-    # get the absolute square of a complex numbers with tensorflow
-    return tf.real(vol*tf.conj(vol))
+# def abssqr_tf(vol):
+#     # get the absolute square of a complex numbers with tensorflow
+#     return tf.real(vol*tf.conj(vol))
 
 def conv3d_fft(vol, otf):
     vol_fft = np.fft.fftn(vol)
@@ -55,38 +55,47 @@ def conv3d_fft(vol, otf):
     return abssqr(vol_fft)
 
 def conv3d_fft_tf(vol, otf):
-    # TODO: fertigstellen: ungeshiftetes Objeket und OTF benutzen
-    input = tf.complex(vol, tf.zeros(vol.shape, dtype=tf.float32))
-    input = tf.cast(input, dtype=tf.complex64)
+    ''' convolve given volume with OTF
+        Requirement/Assumption:
+            volumne AND OTF are not shifted
+    '''
+    # input = tf.complex(vol, tf.zeros(vol.shape, dtype=tf.float32))
+    input = tf.cast(vol, dtype=tf.complex64)
     otf = tf.cast(otf, dtype=tf.complex64)
     vol_fft = tf.fft3d(input)
     # vol_fftshift = hp.fftshift3d(vol_fft)
-
-    vol_fftshift = tf.multiply(vol_fftshift, otf)
-
+    vol_fftshift = tf.multiply(vol_fft, otf)
     # vol_fftshift = hp.ifftshift3d(vol_fftshift)
     vol_fft = tf.ifft3d(vol_fftshift)
-    return abssqr_tf(vol_fft)
+    return tf.real(vol_fft)
 
 
 class Deconvolution_3D():
-    def __init__(self, img, psf, gan, alp=10, lam=1, simulation=False):
+    def __init__(self, vol, otf, generator, discriminator, lam_TV=0., lam_GAN=10.):
+        # GAN initilizer/regularizatior, deactivate trainability
+        self.G = generator
+        self.D = discriminator
+        for layer in self.D.layers[:]:
+            layer.trainable = False
         # inputs: sample image and PSF/OTF
-        self.img = img
-        self.psf = psf
+        self.vol = (vol/127.5 - 1.).astype(np.float32)
+        self.otf = otf
+        # initialize x (before create tensorflow-graph)
+        self.x_init = self.init_x()
+
         # factor: for weight the regularizatior
-        self.lam = lam
-        self.alp = alp
-        # GAN regularizatior
-        self.gan = gan
+        self.lam_TV_weight = lam_TV
+        self.lam_GAN_weight = lam_GAN
+        # create model/computation graph
+        self.build_model()
 
-        # self.model = self.create_model() # besser, später dieses verwenden
-        self.create_model(simulation)
+    def init_x(self):
+        temp = np.expand_dims(np.expand_dims(self.vol, axis=0), axis=-1)
+        return self.G.predict(temp).squeeze()
 
-
-    def create_model(self, simulation):
-        '''
-            model: dF/dx = min(x) ( |A - H(x)|^2 + (lamda*reg_TV) + (alp*(1 - gan.Discriminator(x))) )
+    def build_model(self):
+        ''' Build Model-Graph
+            model: dF/dx = min(x) ( |A - H(x)|^2 + (lam_TV*reg_TV) + (lam_GAN*(1 - gan.D(x))) )
             This model works just for gray-scaled images AND even number of stacks
 
             Parameters:
@@ -100,198 +109,117 @@ class Deconvolution_3D():
         '''
 
         def exp_dim(input):
+            return tf.expand_dims(tf.expand_dims(input, axis=0), axis=-1)
+        def exp_dim_np(input):
             return np.expand_dims(np.expand_dims(input, axis=0), axis=-1)
-        def squ_dim(input):
-            return tf.squeeze(tf.squeeze(input, axis=0), axis=-1)
+        def discriminator_prediction(GT, noisy):
+        # def discriminator_prediction(x, A):
+            # GT, noisy = tf.Session().run([x, A])
+            return self.D.predict([self.exp_dim_np(GT), self.exp_dim_np(noisy)])
 
-        with tf.name_scope("deconvolution_values"):
-            with tf.variable_scope("reconstruction_image"):
-                # generate initilization of reconstruction image from GAN-generator
-                x_init = conv3d_fft(self.img, self.psf)
-                self.x = tf.Variable(squ_dim(self.gan.generator.predict(exp_dim(x_init))), name='x')
+        # graph = tf.Graph()
+        # with graph.as_default() as graph:
+        if (1):     # TODO: das hier unter Umständen noch löschen
+            with tf.name_scope("deconvolution_values"):
+                with tf.variable_scope("reconstruction_image"):
+                    # generate initilization of reconstruction image from GAN-generator
+                    self.x = tf.Variable(self.x_init, name='x')
 
-            with tf.variable_scope("parameter"):
-                if simulation==True:
-                    A_np = (add_poisson(self.img) * conv3d_fft(vol=self.img, otf=self.psf)) + create_gaussian_noise(self.img)
-                    self.A = tf.constant(A_np, dtype=tf.float32, name='measurement')
-                else:
-                    self.A = tf.constant(self.img, dtype=tf.float32, name='measurement')
-                self.H = tf.constant(self.psf, tf.float32, name='otf')
+                with tf.variable_scope("parameter"):
+                    # self.A = tf.placeholder(tf.float32, name='measurement')
+                    self.A = tf.constant(self.vol, name='measurement')
+                    self.H = tf.constant(self.otf, name='otf')
 
-            with tf.variable_scope("regularization"):
-                # self.reg_TV = tf.placeholder(tf.float32, shape=(1,), name='reg_TV')
-                self.reg_TV = tf.Variable(self.total_variation(self.x), name='reg_TV')
-                # self.reg_GAN = tf.placeholder(tf.float32, shape=(1,), name='reg_GAN')
-                print(exp_dim(self.img).shape, exp_dim(x_init).shape)
+                with tf.variable_scope("regularization"):
+                    self.reg_lamda_TV = tf.constant(self.lam_TV_weight, name='lamda_TV')
 
-                self.reg_GAN = tf.Variable(self.gan.discriminator.predict([exp_dim(self.img), exp_dim(x_init)]), name='reg_GAN')
-                print(self.reg_GAN, self.reg_GAN.shape)
+                    self.reg_lamda_GAN = tf.constant(self.lam_GAN_weight, name='lamda_GAN')
+                    self.reg_GAN = tf.placeholder(tf.float32, name='reg_GAN')
 
-        with tf.name_scope("deconvolution_model"):
-            with tf.variable_scope("calculation"):
-                # prepare norm calculation of distance of the two images
-                frobenius = lambda matrix: tf.sqrt(tf.reduce_sum(tf.square(matrix)))
-                self.distance_norm = frobenius(self.A - conv3d_fft_tf(vol=self.x, otf=self.H))
-                self.loss = self.distance_norm
-                self.loss += self.distance_norm + (self.lam*self.reg_TV) + (self.alp*self.reg_GAN)
+            with tf.name_scope("deconvolution_model"):
+                with tf.variable_scope("calculation"):
+                    # prepare norm calculation of distance of the two images
+                    frobenius = lambda matrix: tf.sqrt(tf.reduce_sum(tf.square(matrix)))
+                    # calculate distance of measurement and reconstruction image
+                    self.norm = frobenius(self.A - conv3d_fft_tf(vol=self.x, otf=self.H))
 
-            with tf.variable_scope("objects"):
-                self.optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.1)
-                self.train = self.optimizer.minimize(self.loss)
-                # enable save/load checkpoints of variables
-                self.saver = tf.train.Saver()
-                # add logging for tensorboard
-                tf.summary.scalar('loss_value', self.loss)
-                tf.summary.image('x_init', tf.expand_dims(tf.expand_dims(self.x,0),-1), max_outputs=1)
-                self.summary = tf.summary.merge_all()
+                    # calculate TV regularization term
+                    self.reg_term = self.reg_lamda_TV * self.total_variation(self.x)
 
-                # TODO: implemnt: https://www.tensorflow.org/versions/r1.1/get_started/get_started
+                    # calculate discriminator regularization term, and summarize
+                    self.reg_term += self.reg_lamda_GAN * (1 - self.reg_GAN)
 
+                    # GT, noisy = tf.Session().run([self.x, self.A])
+                    # prediction = self.D.predict([exp_dim_np(GT), exp_dim_np(noisy)])
+					# self.prediction = tf.py_func(discriminator_prediction, [self.x, self.A], tf.float32)
+                    #self.reg_GAN = tf.reduce_mean(self.reg_GAN)
 
-        # with tf.device('/cpu:0'): "/device:GPU:0"
-        #   a = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[2, 3], name='a')
-        #   b = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2], name='b')
-        # c = tf.matmul(a, b)
-        # # Creates a session with log_device_placement set to True.
-        # sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
-        # # Runs the op.
-        # print(sess.run(c))
+                    # define loss and optimizer
+                    self.loss = self.norm + self.reg_term
 
+                    self.optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.01)
+                    self.train = self.optimizer.minimize(self.loss)
 
-        # config = tf.ConfigProto()
-        # config.gpu_options.per_process_gpu_memory_fraction = 0.4
-        # session = tf.Session(config=config, ...)
+                    # enable save/load checkpoints of variables
+                    self.saver = tf.train.Saver()
 
-        # using multiple GPUs
-        # Creates a graph.
-        # c = []
-        # for d in ['/device:GPU:2', '/device:GPU:3']:
-        #   with tf.device(d):
-        #     a = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[2, 3])
-        #     b = tf.constant([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], shape=[3, 2])
-        #     c.append(tf.matmul(a, b))
-        # with tf.device('/cpu:0'):
-        #   sum = tf.add_n(c)
-        # # Creates a session with log_device_placement set to True.
-        # sess = tf.Session(config=tf.ConfigProto(log_device_placement=True))
-        # # Runs the op.
-        # print(sess.run(sum))
+                    # add logging for tensorboard
+                    tf.summary.scalar('loss', self.loss)
+                    tf.summary.image('x', self.x)
+                    self.merged = tf.summary.merge_all()
+                    self.writer = tf.summary.FileWriter('/logs/iterativeDeconvolution/')#, sess.graph)
 
+        print('\nSuccessfully build tensorflow-graph for iterative Deconvolution\n')
+            # return graph
 
-        # TODO: hier evtl gpu_options = tf.GPUOptions(allow_growth=True)
-        # session = tf.InteractiveSession(config=tf.ConfigProto(gpu_options=gpu_options))
-        # GPU gesteuerte Session starten
-
-
-        # self.graph = tf.Graph()
-        # with self.graph.as_default() as graph:
-        #     with tf.name_scope("deconvolution_values"):
-        #         with tf.variable_scope("reconstruction_image"):
-        #             # generate initilization of reconstruction image from GAN-generator
-        #             x_init = conv3d_fft(self.img, self.psf)
-        #             self.x = tf.Variable(squ_dim(self.gan.generator.predict(exp_dim(x_init))), name='x')
-        #
-        #         with tf.variable_scope("parameter"):
-        #             if simulation==True:
-        #                 A_np = (add_poisson(self.img) * conv3d_fft(vol=self.img, otf=self.psf)) + create_gaussian_noise(self.img)
-        #                 self.A = tf.constant(A_np, dtype=tf.float32, name='measurement')
-        #             else:
-        #                 self.A = tf.constant(self.img, dtype=tf.float32, name='measurement')
-        #             self.H = tf.constant(self.psf, tf.float32, name='otf')
-        #
-        #         with tf.variable_scope("regularization"):
-        #             # self.reg_TV = tf.placeholder(tf.float32, shape=(1,), name='reg_TV')
-        #             self.reg_TV = tf.Variable(self.total_variation(self.x), name='reg_TV')
-        #             # self.reg_GAN = tf.placeholder(tf.float32, shape=(1,), name='reg_GAN')
-        #             print(exp_dim(self.img).shape, exp_dim(x_init).shape)
-        #             print(tf.keras.backend.get_session())
-        #             with tf.keras.backend.get_session():
-        #                 # test = self.gan.discriminator.predict([exp_dim(self.img), exp_dim(x_init)])
-        #                 test = tf.Session().run(self.gan.discriminator.predict([exp_dim(self.img), exp_dim(x_init)]))
-        #                 print(test)
-        #
-        #             self.reg_GAN = tf.Variable(self.gan.discriminator.predict([exp_dim(self.img), exp_dim(x_init)]), name='reg_GAN')
-        #             print(self.reg_GAN, self.reg_GAN.shape)
-        #
-        #     with tf.name_scope("deconvolution_model"):
-        #         with tf.variable_scope("calculation"):
-        #             # prepare norm calculation of distance of the two images
-        #             frobenius = lambda matrix: tf.sqrt(tf.reduce_sum(tf.square(matrix)))
-        #             self.distance_norm = frobenius(self.A - conv3d_fft_tf(vol=self.x, otf=self.H))
-        #             self.loss = self.distance_norm
-        #             self.loss += self.distance_norm + (self.lam*self.reg_TV) + (self.alp*self.reg_GAN)
-        #
-        #         with tf.variable_scope("objects"):
-        #             self.optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.1)
-        #             self.train = self.optimizer.minimize(self.loss)
-        #             # enable save/load checkpoints of variables
-        #             self.saver = tf.train.Saver()
-        #             # add logging for tensorboard
-        #             tf.summary.scalar('loss_value', self.loss)
-        #             tf.summary.image('x_init', tf.expand_dims(tf.expand_dims(self.x,0),-1), max_outputs=1)
-        #             self.summary = tf.summary.merge_all()
-        #
-        #             # TODO: implemnt: https://www.tensorflow.org/versions/r1.1/get_started/get_started
-        #             # tf.contrib.learn
-
-    def optimize(self, epochs=10, gpu_mem_fraction=1):
+    def optimize(self, epochs=100, gpu_mem_fraction=0.95):
         '''
             function to run the created graph
         '''
 
-        # # Model parameters
-        # W = tf.Variable([.3], tf.float32)
-        # b = tf.Variable([-.3], tf.float32)
-        # # Model input and output
-        # x = tf.placeholder(tf.float32)
-        # linear_model = W * x + b
-        # y = tf.placeholder(tf.float32)
-        # # loss
-        # loss = tf.reduce_sum(tf.square(linear_model - y)) # sum of the squares
-        # # optimizer
-        # optimizer = tf.train.GradientDescentOptimizer(0.01)
-        # train = optimizer.minimize(loss)
-        # # training data
-        # x_train = [1,2,3,4]
-        # y_train = [0,-1,-2,-3]
-        # # training loop
-        # init = tf.global_variables_initializer()
-        # sess = tf.Session()
-        # sess.run(init) # reset values to wrong
-        # for i in range(1000):
-        #   sess.run(train, {x:x_train, y:y_train})
+        def exp_dim_np(input):
+            return np.expand_dims(np.expand_dims(input, axis=0), axis=-1)
+
+        self.init = tf.global_variables_initializer()
+
+        # # Create a summary to monitor cost tensor
+        # tf.summary.scalar("loss", self.loss)
+        # # Create a summary to monitor image tensor
+        # tf.summary.image('x', self.x)
+        # # Merge all summaries into a single op
+        # merged_summary_op = tf.summary.merge_all()
         #
-        # # evaluate training accuracy
-        # curr_W, curr_b, curr_loss  = sess.run([W, b, loss], {x:x_train, y:y_train})
-        # print("W: %s b: %s loss: %s"%(curr_W, curr_b, curr_loss))
+        # # op to write logs to Tensorboard
+        # summary_writer = tf.summary.FileWriter('/logs/iterativeDeconvolution/')
+        # # summary_writer = tf.summary.FileWriter('/logs/iterativeDeconvolution/example/', graph=self.graph)
 
-        ##########################################################################
+        # set GPU settings and initialize variables
+        gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=gpu_mem_fraction, allow_growth=True)
+        self.sess = tf.Session(config=tf.ConfigProto(gpu_options=gpu_options))
+        self.sess.run(self.init)
 
-        init = tf.global_variables_initializer()
+        x = self.x_init
+        for epoch in range(epochs):
+			# calcualte prediciont by Discriminator and take mean of prediction
+            summary = self.sess.run([self.loss, self.train, self.x, self.reg_GAN],
+                feed_dict={self.reg_GAN: np.mean(self.D.predict( [exp_dim_np(x), exp_dim_np(self.vol)] )),
+                            self.A: self.vol})
+            x = summary[2]
 
-         # attach summary_writer to graph for use of tensorboard
-        # summary_writer = tf.summary.FileWriter(path.join(self.logdir, run_id), sess.graph)
+            # Write logs at every iteration
+            # self.writer.add_summary(summary, epoch)
 
-        gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=gpu_mem_fraction)
-        config = tf.ConfigProto(gpu_options=gpu_options)
+            # print/plot training accuracy
+            if epoch % 100 == 0:
+                print("epoch: {0} ,\tloss: {1}".format(epoch, summary[0]))
+                print("D:", summary[3])
 
-        with tf.Session(graph=self.graph, config=config) as sess:
-            for i in range(epochs):
-                pass
-                # sess.run([self.loss, self.train])
-
-        # # feed_dict = {}
-        #
-        # with tf.Session() as sess:
-        #     sess.run(init)
-        #
-    # test = self.gan.discriminator.predict([x_exp, H_x_exp])
-    # reg_GAN = tf.Variable(self.gan.discriminator.predict([vols_A, vols_B], valid)) #tf.Variable([-.3], tf.float32)
-
+            if epoch % 200 == 0:
+                plt.imshow(np.max(summary[2], axis=2), cmap='gray')
+                plt.show()
 
 
-
-    def total_variation_philipp(self, img):
+    def total_variation_philipp(self, vol):
         """Calculate and return the Total Variation for one or more images.
 
         The total variation is the sum of the absolute differences for neighboring
@@ -299,14 +227,14 @@ class Deconvolution_3D():
         https://en.wikipedia.org/wiki/Total_variation_denoising
 
         Args:
-            img: 4-D Tensor of shape `[batch, height, width, depth]` or
+            vol: 4-D Tensor of shape `[batch, height, width, depth]` or
                  3-D Tensor of shape `[height, width, depth]`.
 
         Raises:
             ValueError: if images.shape is not a 3-D or 4-D vector.
 
         Returns:
-            The total variation of `img`.
+            The total variation of `vol`.
         """
 
         with tf.name_scope("total_variation"):
