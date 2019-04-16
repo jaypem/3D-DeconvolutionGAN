@@ -8,7 +8,6 @@ from skimage import restoration
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import scipy.misc
-import time
 
 import helper as hp
 
@@ -29,7 +28,7 @@ def conv2d(vol, f_type, radius_perc, k_size=5, show_mask=False):
 
         cv2.circle(mask, (crow,ccol), r, color=1, thickness=-1)
         if show_mask:
-            plt.imshow(mask, cmap='gray'), plt.xticks([]); plt.yticks([])
+            plt.imshow(mask, cmap='gray', interpolation='none'), plt.xticks([]); plt.yticks([])
             plt.show()
 
         fshift = fshift * mask
@@ -44,7 +43,8 @@ def conv2d(vol, f_type, radius_perc, k_size=5, show_mask=False):
 
 def abssqr(vol):
     # get the absolute square of a complex numbers
-    return np.real(vol*np.conj(vol))
+    # return np.real(vol*np.conj(vol))
+    return np.real(vol)
 
 # def abssqr_tf(vol):
 #     # get the absolute square of a complex numbers with tensorflow
@@ -72,71 +72,27 @@ def conv3d_fft_tf(vol, otf):
 
 
 class Deconvolution_3D():
-    def __init__(self, vol, otf, generator, discriminator, lam_TV=0., lam_GAN=10., plot_init=False):
+    def __init__(self, vol, otf, generator, discriminator, lam_TV=0., lam_GAN=10.):
         # GAN initilizer/regularizatior, deactivate trainability
         self.G = generator
         self.D = discriminator
         for layer in self.D.layers[:]:
             layer.trainable = False
         # inputs: sample image and PSF/OTF
-        # self.vol = (vol/127.5 - 1.).astype(np.float32)
-        self.vol = vol.astype(np.float32)
+        self.vol = (vol/127.5 - 1.).astype(np.float32)
         self.otf = otf
         # initialize x (before create tensorflow-graph)
         self.x_init = self.init_x()
-        # self.x_init = np.random.randint(0, 255, size=self.vol.shape).astype(np.float32)
-        # self.x_init = self.x_init/127.5 -1.
 
         # factor: for weight the regularizatior
-#        self.lam_TV_weight = lam_TV
-#        self.lam_GAN_weight = lam_GAN
+        self.lam_TV_weight = lam_TV
+        self.lam_GAN_weight = lam_GAN
         # create model/computation graph
         self.build_model()
-        # draw and save measurement and generator output
-        if plot_init:
-            self.save_and_plot()
-
-        self.D_norm = []
-
-
-    def save_and_plot(self, ax=2):
-        p = time.strftime("%Y-%m-%d_%H_%M_%S")
-        # measurement
-        fig = plt.figure(figsize=(7,7))
-        plt.imshow(np.max(self.vol, axis=ax), cmap='gray', interpolation='none');
-        plt.xticks([]); plt.yticks([]); plt.title('Measurement', fontsize=22)
-        fig.savefig('Results/Measurement_{0}.png'.format(p)); plt.close(fig)
-        # generator input
-        fig = plt.figure(figsize=(7,7))
-        plt.imshow(np.max(self.x_init, axis=ax), cmap='gray', interpolation='none');
-        plt.xticks([]); plt.yticks([]); plt.title('Generator-Output', fontsize=22)
-        fig.savefig('Results/GeneratorOutput_{0}.png'.format(p)); plt.close(fig)
-        # iteration Model input = Generator output
-        fig = plt.figure(figsize=(7,7))
-        plt.imshow(np.max(self.x_init, axis=ax), cmap='gray', interpolation='none');
-        plt.xticks([]); plt.yticks([]); plt.title('iterative reconstructed image', fontsize=22)
-        fig.savefig('Results/IterationModelInput{0}.png'.format(p)); plt.close(fig)
-
-        # plot
-        fig = plt.figure(figsize=(25,15))
-        plt.subplot(131);
-        temp = plt.imshow(np.max(self.vol, axis=ax), cmap='gray', interpolation='none');
-        plt.xticks([]); plt.yticks([]); plt.title('Measurement', fontsize=22)
-        plt.subplot(132);
-        temp = plt.imshow(np.max(self.x_init, axis=ax), cmap='gray', interpolation='none');
-        plt.xticks([]); plt.yticks([]); plt.title('Generator Output', fontsize=22)
-        plt.subplot(133);
-        temp = plt.imshow(np.max(self.x_init, axis=ax), cmap='gray', interpolation='none');
-        plt.xticks([]); plt.yticks([]); plt.title('Iteration Model Input', fontsize=22)
-        plt.show()
 
     def init_x(self):
         temp = np.expand_dims(np.expand_dims(self.vol, axis=0), axis=-1)
         return self.G.predict(temp).squeeze()
-
-    def save_D_norm(self):
-        with open('Results/D_norm.csv', 'w') as filehandle:
-            filehandle.writelines("%s\n" % place for place in self.D_norm)
 
     def build_model(self):
         ''' Build Model-Graph
@@ -176,11 +132,9 @@ class Deconvolution_3D():
                     self.H = tf.constant(self.otf, name='otf')
 
                 with tf.variable_scope("regularization"):
-#                    self.reg_lamda_TV = tf.constant(self.lam_TV_weight, name='lamda_TV')
-                    self.reg_lamda_TV = tf.placeholder(tf.float32, name='lamda_TV')
+                    self.reg_lamda_TV = tf.constant(self.lam_TV_weight, name='lamda_TV')
 
-#                    self.reg_lamda_GAN = tf.constant(self.lam_GAN_weight, name='lamda_GAN')
-                    self.reg_lamda_GAN = tf.placeholder(tf.float32, name='lamda_GAN')
+                    self.reg_lamda_GAN = tf.constant(self.lam_GAN_weight, name='lamda_GAN')
                     self.reg_GAN = tf.placeholder(tf.float32, name='reg_GAN')
 
             with tf.name_scope("deconvolution_model"):
@@ -193,13 +147,18 @@ class Deconvolution_3D():
                     # calculate TV regularization term
                     self.reg_term = self.reg_lamda_TV * self.total_variation(self.x)
 
-                    # calculate discriminator regularization term, and summarize, flip,cause real=1.
+                    # calculate discriminator regularization term, and summarize
                     self.reg_term += self.reg_lamda_GAN * (1 - self.reg_GAN)
+
+                    # GT, noisy = tf.Session().run([self.x, self.A])
+                    # prediction = self.D.predict([exp_dim_np(GT), exp_dim_np(noisy)])
+					# self.prediction = tf.py_func(discriminator_prediction, [self.x, self.A], tf.float32)
+                    #self.reg_GAN = tf.reduce_mean(self.reg_GAN)
 
                     # define loss and optimizer
                     self.loss = self.norm + self.reg_term
 
-                    self.optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.07)
+                    self.optimizer = tf.train.GradientDescentOptimizer(learning_rate=0.01)
                     self.train = self.optimizer.minimize(self.loss)
 
                     # enable save/load checkpoints of variables
@@ -242,61 +201,23 @@ class Deconvolution_3D():
 
         x = self.x_init
         for epoch in range(epochs):
-            variance = np.var(x)
-    			# calcualte prediciont by Discriminator and take mean of prediction
+			# calcualte prediciont by Discriminator and take mean of prediction
             summary = self.sess.run([self.loss, self.train, self.x, self.reg_GAN],
                 feed_dict={self.reg_GAN: np.mean(self.D.predict( [exp_dim_np(x), exp_dim_np(self.vol)] )),
-                            self.A: self.vol,
-                            self.reg_lamda_TV: 0.0 , #variance,
-                            self.reg_lamda_GAN: variance*5})
+                            self.A: self.vol})
             x = summary[2]
-
-
 
             # Write logs at every iteration
             # self.writer.add_summary(summary, epoch)
 
             # print/plot training accuracy
-            if epoch % 10 == 0:
-                v = np.around(np.var(x), decimals=3)
-                print("epoch: {0} ,\tloss: {1} , D: {2} ,variance: {3}".format(epoch, summary[0], np.around(summary[3], decimals=3), v))
-                self.D_norm.append(summary[3])
+            if epoch % 100 == 0:
+                print("epoch: {0} ,\tloss: {1}".format(epoch, summary[0]))
+                print("D:", summary[3])
 
-            if epoch % 250 == 0:
-                fig = plt.figure(figsize=(7,7))
-                plt.imshow(np.max(summary[2], axis=2), cmap='gray', interpolation='none');
-                plt.xticks([]); plt.yticks([]); plt.title('iterative reconstructed image', fontsize=22)
-                fig.savefig('Results/IterationModel{0}_{1}.png'.format(time.strftime("%Y-%m-%d_%H_%M_%S"), epoch))
-                plt.show(); plt.close(fig)
-
-                # self.save_and_plot()
-
-                # plot
-                fig = plt.figure(figsize=(25,15))
-                plt.subplot(131);
-                temp = plt.imshow(np.max(self.vol, axis=2), cmap='gray', interpolation='none');
-                plt.xticks([]); plt.yticks([]); plt.title('Measurement', fontsize=22)
-                plt.subplot(132);
-                temp = plt.imshow(np.max(self.x_init, axis=2), cmap='gray', interpolation='none');
-                plt.xticks([]); plt.yticks([]); plt.title('Generator Output', fontsize=22)
-                plt.subplot(133);
-                temp = plt.imshow(np.max(x, axis=2), cmap='gray', interpolation='none');
-                plt.xticks([]); plt.yticks([]); plt.title('Iteration Model Input', fontsize=22)
+            if epoch % 200 == 0:
+                plt.imshow(np.max(summary[2], axis=2), cmap='gray', interpolation='none')
                 plt.show()
-
-                #einzeltest
-#                plt.imshow(np.max(summary[2], axis=2), cmap='gray')
-#                plt.show()
-
-            if epoch == epochs-1:
-                fig = plt.figure(figsize=(7,7))
-                plt.imshow(np.max(summary[2], axis=2), cmap='gray', interpolation='none');
-                plt.xticks([]); plt.yticks([]); plt.title('iterative reconstructed image', fontsize=22)
-                fig.savefig('Results/IterationModelInput{0}_{1}.png'.format(time.strftime("%Y-%m-%d_%H_%M_%S"), epoch))
-                plt.show(); plt.close(fig)
-
-        # save D-Norm in list
-        self.save_D_norm()
 
 
     def total_variation_philipp(self, vol):

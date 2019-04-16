@@ -7,6 +7,7 @@ from warnings import warn
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import tensorflow as tf
 from keras.callbacks import Callback
+from keras.models import model_from_yaml
 
 
 # ****************************************************************************
@@ -65,6 +66,34 @@ def swapAxes(img, swap=False, manual=False, ax0=0, ax1=1, display=False):
 
     return img
 
+def cut_volume(vol, resize, centered=True):
+    rows, cols, depth = vol.shape
+    if len(resize) == 2:
+        r, c = resize[:2]
+        r2, c2 = int(r/2), int(c/2)
+    else:
+        r, c, s = resize
+        r2, c2, s2 = int(r/2), int(c/2), int(s/2)
+
+    if centered:
+        crow, ccol = int(rows/2), int(cols/2)
+        if len(resize) == 3:
+            cstack = int(depth/2)
+    else:
+        crow = np.random.randint(low=r2, high=rows-r2, size=1)[0]
+        ccol = np.random.randint(low=c2, high=cols-c2, size=1)[0]
+        if len(resize) == 3:
+            cstack = np.random.randint(low=s2, high=depth-s2, size=1)[0]
+
+    try:
+        if len(resize) == 2:
+            return vol[(crow-r2):(crow+r2), (ccol-c2):(ccol+c2), :]
+        else:
+            return vol[(crow-r2):(crow+r2), (ccol-c2):(ccol+c2), (cstack-s2):(cstack+s2)]
+    except:
+        print('ERROR by method: DataLoader3D.cut_volume, resize volume')
+        # return resize(vol_A)
+
 # ****************************************************************************
 # *                               MODEL HANDLING                             *
 # ****************************************************************************
@@ -121,20 +150,31 @@ def model_saver(model_instance, model_name, path="./../models/"):
     print('model_saver: model successfully saved in: ', path+date+'/'+h5)
 
 def model_loader(day, filename):
-    file = "./../models/{0}/{1}_model_parameter.json".format(day, filename)
+    # file = "./../models/{0}/{1}_model_parameter.json".format(day, filename)
     # load json and create model
-    json_file = open(file, 'r')
-    loaded_model_json = json_file.read()
-    json_file.close()
+    # json_file = open(file, 'r')
+    # loaded_model_json = json_file.read()
+    # json_file.close()
 
-    from keras.models import model_from_json
-    file = "./../models/{0}/{1}.h5".format(day, filename)
-    loaded_model = model_from_json(loaded_model_json)
+    # load YAML and create model
+    file = "./models/{0}/{1}_model_parameter.yaml".format(day, filename)
+    yaml_file = open(file, 'r')
+    loaded_model_yaml = yaml_file.read()
+    yaml_file.close()
+
+    loaded_model = model_from_yaml(loaded_model_yaml)
+    file = "./models/{0}/{1}.h5".format(day, filename)
+    print('file:', file)
+
+    # from keras.models import model_from_json
+    # file = "./../models/{0}/{1}.h5".format(day, filename)
+    # loaded_model = model_from_json(loaded_model_json)
+
     # load weights into new model
     loaded_model.load_weights(file)
     print("Loaded model from disk")
-
-    return loaded_model_json, loaded_model
+    # return loaded_model_json, loaded_model
+    return loaded_model
 
 # ****************************************************************************
 # *                       STACK MANIPULATION/CALCULATION                     *

@@ -25,7 +25,7 @@
 		"SAVE_LOSS": true,
 		"MANIPULATION_STACKS": "NONE",
 		"ADAM_OPTIMIZER_LEARNRATE": 0.0001,
-		"LOSS_WEIGHTS": [0, 10],
+		"LOSS_WEIGHTS": [1, 100],
 		"D_LOSS": "mse",
 		"COMBINED_LOSS": ["kullback_leibler_divergence", "mae"],
 		"DROPOUT": 0.25,
